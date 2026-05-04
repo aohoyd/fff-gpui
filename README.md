@@ -65,7 +65,7 @@ Having trouble building? Check Zed's [macOS troubleshooting guide](https://zed.d
 Set options in `~/.config/fff-gpui/config.toml`:
 
 ```toml
-editor = "/usr/local/bin/zed" # the result of: ${which $EDITOR} 
+editor = "/usr/local/bin/zed" # run `which $EDITOR` in your shell to find this path
 sync_zed_settings = true
 global_keybind = "hyper+f"
 window_width = 960.0
