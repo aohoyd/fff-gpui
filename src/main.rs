@@ -21,6 +21,7 @@ use assets::{Assets, FontAssets};
 use global_hotkey::GlobalHotKeyManager;
 use gpui::prelude::*;
 use gpui::*;
+use indoc::indoc;
 use tracing::{debug, info};
 
 use config::AppConfig;
@@ -193,12 +194,22 @@ fn parse_launch_options() -> LaunchOptions {
 }
 
 fn print_help() {
-    println!(
-        "fff-gpui {version}\n\n\
-Usage:\n  fff-gpui [OPTIONS] [PATH]\n\n\
-Options:\n  --grep            Start in grep mode\n  --std-out            Print result to stdout\n  -o, --open <PATH>     Open a specific path\n  -d, --debug       Print traces to stdout\n  -h, --help        Show this help text\n  -V, --version     Show version information",
-        version = env!("CARGO_PKG_VERSION")
-    );
+    let help_msg = indoc! {"
+        fff-gpui {version}
+
+        Usage:
+          fff-gpui [OPTIONS] [PATH]
+
+        Options:
+          --grep                Start in grep mode
+          --std-out             Print result to stdout
+          -o, --open <PATH>     Open a specific path
+          -d, --debug           Print traces to stdout
+          -h, --help            Show this help text
+          -V, --version         Show version information
+    "}
+    .replacen("{version}", env!("CARGO_PKG_VERSION"), 1);
+    print!("{}", help_msg)
 }
 
 #[cfg(target_os = "macos")]
