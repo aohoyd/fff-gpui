@@ -74,6 +74,7 @@ struct LaunchOptions {
     base_path_explicit: bool,
     start_in_grep: bool,
     print_stdout: bool,
+    debug_traces: bool,
     show_help: bool,
     show_version: bool,
 }
@@ -134,6 +135,7 @@ fn parse_launch_options() -> LaunchOptions {
     let mut open_path = None;
     let mut start_in_grep = false;
     let mut print_stdout = false;
+    let mut debug_traces = false;
     let mut show_help = false;
     let mut show_version = false;
     let mut args = std::env::args().skip(1);
@@ -159,6 +161,11 @@ fn parse_launch_options() -> LaunchOptions {
             continue;
         }
 
+        if arg == "-d" || arg == "--debug" {
+            debug_traces = true;
+            continue;
+        }
+
         if arg == "--open" {
             if let Some(path) = args.next().map(PathBuf::from).and_then(normalize_dir) {
                 open_path = Some(path);
@@ -179,6 +186,7 @@ fn parse_launch_options() -> LaunchOptions {
         base_path_explicit: base_path.is_some(),
         start_in_grep,
         print_stdout,
+        debug_traces,
         show_help,
         show_version,
     }
@@ -188,7 +196,7 @@ fn print_help() {
     println!(
         "fff-gpui {version}\n\n\
 Usage:\n  fff-gpui [OPTIONS] [PATH]\n\n\
-Options:\n  --grep            Start in grep mode\n  --open <PATH>     Open a specific path\n  -h, --help        Show this help text\n  -V, --version     Show version information",
+Options:\n  --grep            Start in grep mode\n  --open <PATH>     Open a specific path\n  -d, --debug       Print traces to stdout\n  -h, --help        Show this help text\n  -V, --version     Show version information",
         version = env!("CARGO_PKG_VERSION")
     );
 }
@@ -587,10 +595,10 @@ async fn drive_service_commands(
 
 // Launch the resident GPUI service.
 fn main() {
-    log::init_tracing();
+    let launch = parse_launch_options();
+    log::init_tracing(launch.debug_traces);
     configure_allocator_for_low_rss();
 
-    let launch = parse_launch_options();
     if launch.show_help {
         print_help();
         return;
