@@ -664,19 +664,29 @@ fn main() {
         }
     }
 
+    let one_shot_only = launch.open_path.is_some();
+
     let (service_tx, service_rx) = async_channel::unbounded::<CommandEnvelope>();
-    start_listener(service_tx.clone()).expect("failed to start launch request listener");
-    info!("resident service listener started");
+    if !one_shot_only {
+        start_listener(service_tx.clone()).expect("failed to start launch request listener");
+        info!("resident service listener started");
+    } else {
+        info!("--open without resident daemon; running one-shot picker");
+    }
 
     let app = Application::new().with_assets(Assets);
-    let reopen_session = picker_session.clone();
-    let reopen_runtime_config = runtime_config.clone();
-    app.on_reopen(move |cx| show_or_focus_picker(&reopen_session, &reopen_runtime_config, cx));
+    if !one_shot_only {
+        let reopen_session = picker_session.clone();
+        let reopen_runtime_config = runtime_config.clone();
+        app.on_reopen(move |cx| show_or_focus_picker(&reopen_session, &reopen_runtime_config, cx));
+    }
 
     app.run(move |cx: &mut App| {
         FontAssets::load_fonts(cx).expect("failed to load bundled fonts");
         make_dockless();
-        hotkey::install_event_handler(service_tx.clone());
+        if !one_shot_only {
+            hotkey::install_event_handler(service_tx.clone());
+        }
         if let Ok(state) = runtime_config.lock() {
             theme::sync_from_config(&state.config, cx.window_appearance(), cx);
             let _ = apply_key_bindings(cx, &state.config, false);
@@ -693,38 +703,43 @@ fn main() {
                 open_config_file(&runtime_config);
             });
         }
-        cx.spawn({
-            let runtime_config = runtime_config.clone();
-            async move |cx: &mut AsyncApp| {
-                let _ = cx.update(|_app| {
-                    if let Ok(mut state) = runtime_config.lock() {
-                        let config = state.config.clone();
-                        register_global_hotkey(&mut state, &config);
-                    }
-                });
-            }
-        })
-        .detach();
+        if !one_shot_only {
+            cx.spawn({
+                let runtime_config = runtime_config.clone();
+                async move |cx: &mut AsyncApp| {
+                    let _ = cx.update(|_app| {
+                        if let Ok(mut state) = runtime_config.lock() {
+                            let config = state.config.clone();
+                            register_global_hotkey(&mut state, &config);
+                        }
+                    });
+                }
+            })
+            .detach();
+        }
         if let Some(path) = launch.open_path.clone() {
             open_window(
                 one_shot_session(path, &one_shot_sessions, launch.start_in_grep, None),
                 &runtime_config,
                 cx,
             );
+            cx.on_window_closed(|cx| cx.quit()).detach();
         } else {
             info!("launching without initial picker window");
         }
-        menubar::install(service_tx.clone());
+        if !one_shot_only {
+            menubar::install(service_tx.clone());
 
-        cx.spawn(move |cx: &mut AsyncApp| {
-            drive_service_commands(
-                service_rx,
-                picker_session.clone(),
-                one_shot_sessions.clone(),
-                runtime_config.clone(),
-                cx.clone(),
-            )
-        })
-        .detach();
+            cx.spawn(move |cx: &mut AsyncApp| {
+                drive_service_commands(
+                    service_rx,
+                    picker_session.clone(),
+                    one_shot_sessions.clone(),
+                    runtime_config.clone(),
+                    cx.clone(),
+                )
+            })
+            .detach();
+        }
     });
 }
