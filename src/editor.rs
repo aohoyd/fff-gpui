@@ -1,5 +1,7 @@
 use std::path::Path;
 use std::process::{Child, Command};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 
 use anyhow::{Context as _, anyhow};
 use tracing::{debug, info, instrument};
@@ -43,8 +45,10 @@ pub fn open_in_editor(
 
     info!(editor = ?editor, "opening file with editor");
 
-    editor_command(&editor, path, goto)
-        .spawn()
+    let mut cmd = editor_command(&editor, path, goto);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    cmd.spawn()
         .with_context(|| format!("failed to spawn editor command {:?}", editor))
 }
 
