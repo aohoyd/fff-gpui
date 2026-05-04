@@ -68,6 +68,10 @@ Set options in `~/.config/fff-gpui/config.toml`:
 editor = "/usr/local/bin/zed" # run `which $EDITOR` in your shell to find this path
 sync_zed_settings = true
 global_keybind = "hyper+f"
+exclude_dirs = [
+    "Library",
+    "node_modules"
+]
 window_width = 960.0
 window_height = 520.0
 picker_pane_width = 430.0
@@ -89,6 +93,8 @@ When `sync_zed_settings` is enabled, fff-gpui reads Zed's `settings.json` and mi
 Explicit config values still win, so you can keep Zed sync enabled and override just the theme, fonts, sizes, or specific colors when needed. In practice, `[theme].name` overrides Zed's chosen theme, and `[font]` overrides the synced font families and sizes.
 
 For `global_keybind`, `hyper` is accepted as a shorthand for `shift+control+alt+super`.
+
+`exclude_dirs` takes an array of directory paths. Relative entries are resolved from the current base path, so `["Library"]` excludes that directory anywhere under the opened scope. We do not currently support wildcard globbing here. In practice, plain directory names are enough for the system-wide picker use case this option targets, and they keep the config predictable.
 
 Zed themes are discovered from the bundled theme set, your local Zed installation, and extension themes under `~/Library/Application Support/Zed/extensions/installed/`.
 </details>
