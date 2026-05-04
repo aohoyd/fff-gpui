@@ -411,11 +411,7 @@ fn execute_grep_search(
         )
     };
 
-    let mut grep_result = run(primary_mode);
-    if grep_result.matches.is_empty() && primary_mode == GrepMode::PlainText {
-        grep_result = run(GrepMode::Fuzzy);
-    }
-
+    let grep_result = run(primary_mode);
     let mut items: Vec<FileItemSnapshot> = Vec::new();
     let mut item_by_path = std::collections::HashMap::<PathBuf, usize>::new();
     for gm in &grep_result.matches {
