@@ -125,6 +125,7 @@ pub struct FffPicker {
     shared_query_tracker: SharedQueryTracker,
     base_path: PathBuf,
     view: SearchView,
+    excluded_dirs: Vec<PathBuf>,
     print_stdout: bool,
     grep_mode: GrepMode,
     query: String,
@@ -361,6 +362,7 @@ fn execute_grep_search(
     picker: &FilePicker,
     query: &str,
     base: &Path,
+    excluded_dirs: &[PathBuf],
     abort_signal: Arc<AtomicBool>,
     grep_mode: GrepMode,
 ) -> (Vec<FileItemSnapshot>, usize, usize) {
@@ -423,6 +425,9 @@ fn execute_grep_search(
             continue;
         }
         let absolute_path = fi.absolute_path(picker, base);
+        if path_is_excluded(&absolute_path, excluded_dirs) {
+            continue;
+        }
         let file_name = fi.file_name(picker);
         let dir = fi.dir_str(picker);
         let grep_match = GrepMatchLine {
@@ -462,6 +467,10 @@ fn execute_grep_search(
     (items, total_files_seen, total_matched)
 }
 
+fn path_is_excluded(path: &Path, excluded_dirs: &[PathBuf]) -> bool {
+    excluded_dirs.iter().any(|excluded| path.starts_with(excluded))
+}
+
 impl FffPicker {
     // Create a new picker rooted at `base_path` and start the background file scan.
     pub fn new(
@@ -469,6 +478,7 @@ impl FffPicker {
         shared: PickerSharedState,
         enable_content_indexing: bool,
         start_in_grep: bool,
+        excluded_dirs: Vec<PathBuf>,
         print_stdout: bool,
         editor: String,
         responder: Option<ResponderArc>,
@@ -498,6 +508,7 @@ impl FffPicker {
             } else {
                 SearchView::Files
             },
+            excluded_dirs,
             print_stdout,
             grep_mode: GrepMode::PlainText,
             query: String::new(),
@@ -755,6 +766,7 @@ impl FffPicker {
         let query_str = self.query.clone();
         let view = self.view;
         let grep_mode = self.grep_mode;
+        let excluded_dirs = self.excluded_dirs.clone();
         info!(
             epoch,
             query = %query_str.trim(),
@@ -800,6 +812,32 @@ impl FffPicker {
                                     ..Default::default()
                                 },
                             );
+                            let fuzzy_items = search
+                                .items
+                                .iter()
+                                .filter_map(|fi| {
+                                    if fi.is_binary() {
+                                        return None;
+                                    }
+                                    let absolute_path = fi.absolute_path(picker, &base);
+                                    if path_is_excluded(&absolute_path, &excluded_dirs) {
+                                        return None;
+                                    }
+                                    let file_name = fi.file_name(picker);
+                                    let dir = fi.dir_str(picker);
+                                    Some(FileItemSnapshot {
+                                        git_status: format_git_status_opt(fi.git_status)
+                                            .map(str::to_string),
+                                        frecency_score: fi.access_frecency_score,
+                                        match_ranges: find_match_ranges(&query, &file_name),
+                                        file_name,
+                                        dir,
+                                        absolute_path,
+                                        grep_matches: vec![],
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            let visible_results = fuzzy_items.len();
                             info!(
                                 epoch,
                                 query = %query,
@@ -809,38 +847,25 @@ impl FffPicker {
                                 search_elapsed = ?file_search_started.elapsed(),
                                 total_files = search.total_files,
                                 total_matched = search.total_matched,
-                                returned = search.items.len(),
+                                visible_results,
                                 "file search completed"
                             );
-                            let fuzzy_items = search
-                                .items
-                                .iter()
-                                .filter(|fi| !fi.is_binary())
-                                .map(|fi| {
-                                    let file_name = fi.file_name(picker);
-                                    let dir = fi.dir_str(picker);
-                                    let absolute_path = fi.absolute_path(picker, &base);
-                                    FileItemSnapshot {
-                                        git_status: format_git_status_opt(fi.git_status)
-                                            .map(str::to_string),
-                                        frecency_score: fi.access_frecency_score,
-                                        match_ranges: find_match_ranges(&query, &file_name),
-                                        file_name,
-                                        dir,
-                                        absolute_path,
-                                        grep_matches: vec![],
-                                    }
-                                })
-                                .collect::<Vec<_>>();
 
-                            (fuzzy_items, search.total_files, search.total_matched)
+                            (fuzzy_items, search.total_files, visible_results)
                         }
                         SearchView::Grep => {
                             if query.is_empty() {
                                 return (Vec::new(), 0, 0);
                             }
 
-                            execute_grep_search(picker, &query_str, &base, abort_signal, grep_mode)
+                            execute_grep_search(
+                                picker,
+                                &query_str,
+                                &base,
+                                &excluded_dirs,
+                                abort_signal,
+                                grep_mode,
+                            )
                         }
                     }
                 })

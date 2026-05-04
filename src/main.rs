@@ -14,7 +14,7 @@ mod text_field;
 mod theme;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use assets::{Assets, FontAssets};
@@ -128,6 +128,31 @@ fn home_dir() -> PathBuf {
 fn normalize_dir(path: PathBuf) -> Option<PathBuf> {
     path.is_dir()
         .then(|| std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+fn resolve_excluded_dirs(base_path: &Path, exclude_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let home = home_dir();
+    exclude_dirs
+        .iter()
+        .filter_map(|dir| {
+            let raw = dir.to_string_lossy();
+            if raw.is_empty() {
+                return None;
+            }
+
+            let resolved = if raw == "~" {
+                home.clone()
+            } else if let Some(rest) = raw.strip_prefix("~/") {
+                home.join(rest)
+            } else if dir.is_absolute() {
+                dir.clone()
+            } else {
+                base_path.join(dir)
+            };
+
+            Some(resolved)
+        })
+        .collect()
 }
 
 // Resolve the base directory from argv[1] or the user's home directory.
@@ -388,6 +413,7 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
     let shared = session.shared;
     let enable_content_indexing = session.enable_content_indexing;
     let start_in_grep = session.start_in_grep;
+    let excluded_dirs = resolve_excluded_dirs(&base_path, &config.exclude_dirs);
     let print_stdout = session.print_stdout;
     let responder = session.responder;
     let editor = config.editor.clone();
@@ -424,6 +450,7 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
                     shared.clone(),
                     enable_content_indexing,
                     start_in_grep,
+                    excluded_dirs.clone(),
                     print_stdout,
                     editor.clone(),
                     responder.clone(),

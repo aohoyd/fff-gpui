@@ -90,6 +90,8 @@ pub struct AppConfig {
     pub sync_zed_settings: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_keybind: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_dirs: Vec<PathBuf>,
     #[serde(default = "default_window_width")]
     pub window_width: f32,
     #[serde(default = "default_window_height")]
@@ -108,6 +110,7 @@ impl Default for AppConfig {
             editor: String::new(),
             sync_zed_settings: true,
             global_keybind: None,
+            exclude_dirs: Vec::new(),
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             picker_pane_width: DEFAULT_PICKER_PANE_WIDTH,
@@ -191,6 +194,9 @@ pub fn load_config_from(path: &Path) -> Result<LoadedConfig> {
     {
         config.global_keybind = None;
     }
+    config
+        .exclude_dirs
+        .retain(|path| !path.as_os_str().is_empty());
     if !config.window_width.is_finite() || config.window_width <= 0.0 {
         warn!(
             value = config.window_width,
