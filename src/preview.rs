@@ -348,7 +348,7 @@ pub fn warm_highlighter() {
 pub fn overlay_match_ranges(
     spans: &[HighlightedSpan],
     byte_ranges: &[(u32, u32)],
-    match_color: u32,
+    _match_color: u32,
     match_bg: Option<u32>,
 ) -> Vec<HighlightedSpan> {
     if byte_ranges.is_empty() {
@@ -392,8 +392,8 @@ pub fn overlay_match_ranges(
             let hi_e = (overlap_end - span_start) as usize;
             if let Some((hi_s, hi_e)) = clamp_range_to_char_boundaries(&span.text, hi_s, hi_e) {
                 result.push(HighlightedSpan {
-                    color: match_color,
-                    bg: match_bg,
+                    color: span.color,
+                    bg: match_bg.or(span.bg),
                     italic: span.italic,
                     bold: span.bold,
                     underline: span.underline,

@@ -468,7 +468,9 @@ fn execute_grep_search(
 }
 
 fn path_is_excluded(path: &Path, excluded_dirs: &[PathBuf]) -> bool {
-    excluded_dirs.iter().any(|excluded| path.starts_with(excluded))
+    excluded_dirs
+        .iter()
+        .any(|excluded| path.starts_with(excluded))
 }
 
 impl FffPicker {
@@ -1932,7 +1934,10 @@ impl Render for FffPicker {
                                                     .when(span.underline, |d| d.underline())
                                                     .when(span.strikethrough, |d| d.line_through());
                                                 if let Some(bg_color) = span.bg {
-                                                    element = element.bg(rgb(bg_color));
+                                                    element = element
+                                                        .bg(rgba((bg_color << 8) | 0x77))
+                                                        .px(px(3.0))
+                                                        .rounded(px(4.0));
                                                 }
                                                 element.child(span.text.clone())
                                             }))
