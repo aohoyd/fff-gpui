@@ -166,7 +166,7 @@ fn parse_launch_options() -> LaunchOptions {
             continue;
         }
 
-        if arg == "--open" {
+        if arg == "-o" || arg == "--open" {
             if let Some(path) = args.next().map(PathBuf::from).and_then(normalize_dir) {
                 open_path = Some(path);
             }
@@ -196,7 +196,7 @@ fn print_help() {
     println!(
         "fff-gpui {version}\n\n\
 Usage:\n  fff-gpui [OPTIONS] [PATH]\n\n\
-Options:\n  --grep            Start in grep mode\n  --open <PATH>     Open a specific path\n  -d, --debug       Print traces to stdout\n  -h, --help        Show this help text\n  -V, --version     Show version information",
+Options:\n  --grep            Start in grep mode\n  --std-out            Print result to stdout\n  -o, --open <PATH>     Open a specific path\n  -d, --debug       Print traces to stdout\n  -h, --help        Show this help text\n  -V, --version     Show version information",
         version = env!("CARGO_PKG_VERSION")
     );
 }
