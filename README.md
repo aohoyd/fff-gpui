@@ -29,7 +29,7 @@ brew services start fff-gpui
 Set options in `~/.config/fff-gpui/config.toml`:
 
 ```toml
-editor = "zed"
+editor = "/usr/local/bin/zed" # the result of: ${which $EDITOR} 
 sync_zed_settings = true
 global_keybind = "hyper+f"
 window_width = 960.0
