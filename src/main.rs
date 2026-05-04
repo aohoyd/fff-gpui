@@ -73,6 +73,7 @@ struct LaunchOptions {
     open_path: Option<PathBuf>,
     base_path_explicit: bool,
     start_in_grep: bool,
+    print_stdout: bool,
     show_help: bool,
     show_version: bool,
 }
@@ -85,6 +86,7 @@ struct PickerSession {
     shared: PickerSharedState,
     enable_content_indexing: bool,
     start_in_grep: bool,
+    print_stdout: bool,
     responder: Option<ResponderArc>,
 }
 
@@ -96,12 +98,18 @@ struct RuntimeConfig {
 }
 
 impl PickerSession {
-    fn new(base_path: PathBuf, enable_content_indexing: bool, start_in_grep: bool) -> Self {
+    fn new(
+        base_path: PathBuf,
+        enable_content_indexing: bool,
+        start_in_grep: bool,
+        print_stdout: bool,
+    ) -> Self {
         Self {
             base_path,
             shared: PickerSharedState::default(),
             enable_content_indexing,
             start_in_grep,
+            print_stdout,
             responder: None,
         }
     }
@@ -125,6 +133,7 @@ fn parse_launch_options() -> LaunchOptions {
     let mut base_path = None;
     let mut open_path = None;
     let mut start_in_grep = false;
+    let mut print_stdout = false;
     let mut show_help = false;
     let mut show_version = false;
     let mut args = std::env::args().skip(1);
@@ -142,6 +151,11 @@ fn parse_launch_options() -> LaunchOptions {
 
         if arg == "--grep" {
             start_in_grep = true;
+            continue;
+        }
+
+        if arg == "--std-out" {
+            print_stdout = true;
             continue;
         }
 
@@ -164,6 +178,7 @@ fn parse_launch_options() -> LaunchOptions {
         open_path,
         base_path_explicit: base_path.is_some(),
         start_in_grep,
+        print_stdout,
         show_help,
         show_version,
     }
@@ -354,6 +369,7 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
     let shared = session.shared;
     let enable_content_indexing = session.enable_content_indexing;
     let start_in_grep = session.start_in_grep;
+    let print_stdout = session.print_stdout;
     let responder = session.responder;
     let editor = config.editor.clone();
     let window_width = config.window_width;
@@ -389,6 +405,7 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
                     shared.clone(),
                     enable_content_indexing,
                     start_in_grep,
+                    print_stdout,
                     editor.clone(),
                     responder.clone(),
                     cx,
@@ -436,13 +453,14 @@ fn snapshot_session(session: &Arc<Mutex<PickerSession>>) -> PickerSession {
     session
         .lock()
         .map(|session| session.clone())
-        .unwrap_or_else(|_| PickerSession::new(home_dir(), false, false))
+        .unwrap_or_else(|_| PickerSession::new(home_dir(), false, false, false))
 }
 
 fn one_shot_session(
     path: PathBuf,
     sessions: &Arc<Mutex<HashMap<PathBuf, PickerSession>>>,
     start_in_grep: bool,
+    print_stdout: bool,
     responder: Option<ResponderArc>,
 ) -> PickerSession {
     let fallback_path = path.clone();
@@ -451,11 +469,12 @@ fn one_shot_session(
         .map(|mut sessions| {
             sessions
                 .entry(path.clone())
-                .or_insert_with(|| PickerSession::new(path, true, start_in_grep))
+                .or_insert_with(|| PickerSession::new(path, true, start_in_grep, print_stdout))
                 .clone()
         })
-        .unwrap_or_else(|_| PickerSession::new(fallback_path, true, start_in_grep));
+        .unwrap_or_else(|_| PickerSession::new(fallback_path, true, start_in_grep, print_stdout));
     session.start_in_grep = start_in_grep;
+    session.print_stdout = print_stdout;
     session.responder = responder;
     session
 }
@@ -500,7 +519,8 @@ fn handle_service_command(
                 Ok(mut current) => {
                     let changed = current.base_path != path;
                     if changed {
-                        *current = PickerSession::new(path.clone(), true, in_grep);
+                        *current =
+                            PickerSession::new(path.clone(), true, in_grep, current.print_stdout);
                     } else {
                         current.start_in_grep = in_grep;
                     }
@@ -508,7 +528,7 @@ fn handle_service_command(
                     (changed, current.clone())
                 }
                 Err(_) => {
-                    let mut s = PickerSession::new(path.clone(), true, in_grep);
+                    let mut s = PickerSession::new(path.clone(), true, in_grep, false);
                     s.responder = responder.clone();
                     (true, s)
                 }
@@ -523,8 +543,12 @@ fn handle_service_command(
         }
         ServiceCommand::OpenOneShot { path, in_grep } => {
             debug!(path = %path.display(), in_grep, "received one-shot open service command");
+            let print_stdout = session
+                .lock()
+                .map(|session| session.print_stdout)
+                .unwrap_or(false);
             open_window(
-                one_shot_session(path, one_shot_sessions, in_grep, responder),
+                one_shot_session(path, one_shot_sessions, in_grep, print_stdout, responder),
                 runtime_config,
                 cx,
             );
@@ -580,6 +604,7 @@ fn main() {
         base_path.clone(),
         launch.base_path_explicit,
         launch.start_in_grep,
+        launch.print_stdout,
     )));
     let one_shot_sessions = Arc::new(Mutex::new(HashMap::new()));
     let loaded_config = match config::load_active_config() {
@@ -719,7 +744,13 @@ fn main() {
         }
         if let Some(path) = launch.open_path.clone() {
             open_window(
-                one_shot_session(path, &one_shot_sessions, launch.start_in_grep, None),
+                one_shot_session(
+                    path,
+                    &one_shot_sessions,
+                    launch.start_in_grep,
+                    launch.print_stdout,
+                    None,
+                ),
                 &runtime_config,
                 cx,
             );

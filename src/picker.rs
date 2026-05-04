@@ -125,6 +125,7 @@ pub struct FffPicker {
     shared_query_tracker: SharedQueryTracker,
     base_path: PathBuf,
     view: SearchView,
+    print_stdout: bool,
     grep_mode: GrepMode,
     query: String,
     results: Arc<Vec<FileItemSnapshot>>,
@@ -468,6 +469,7 @@ impl FffPicker {
         shared: PickerSharedState,
         enable_content_indexing: bool,
         start_in_grep: bool,
+        print_stdout: bool,
         editor: String,
         responder: Option<ResponderArc>,
         cx: &mut Context<Self>,
@@ -496,6 +498,7 @@ impl FffPicker {
             } else {
                 SearchView::Files
             },
+            print_stdout,
             grep_mode: GrepMode::PlainText,
             query: String::new(),
             results: Arc::new(Vec::new()),
@@ -1106,6 +1109,11 @@ impl FffPicker {
         let mut last_error: Option<String> = None;
         for entry in &entries {
             let goto = entry.line.zip(entry.column);
+            if self.print_stdout {
+                println!("{}", entry.path.display());
+                opened += 1;
+                continue;
+            }
             match editor::open_in_editor(&entry.path, goto, &self.editor) {
                 Ok(child) => {
                     info!(pid = child.id(), path = %entry.path.display(), "spawned editor");
