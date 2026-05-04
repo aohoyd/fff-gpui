@@ -127,12 +127,12 @@ pub struct FffPicker {
     view: SearchView,
     grep_mode: GrepMode,
     query: String,
-    results: Vec<FileItemSnapshot>,
+    results: Arc<Vec<FileItemSnapshot>>,
     total_files: usize,
     total_matched: usize,
     indexed_count: usize,
     selected: usize,
-    selected_paths: BTreeSet<PathBuf>,
+    selected_paths: Arc<BTreeSet<PathBuf>>,
     scan_done: bool,
     search_epoch: u64,
     search_in_flight: bool,
@@ -146,7 +146,7 @@ pub struct FffPicker {
     focus_handle: FocusHandle,
     list_scroll: UniformListScrollHandle,
     preview_scroll: UniformListScrollHandle,
-    preview_lines: Vec<HighlightedLine>,
+    preview_lines: Arc<Vec<HighlightedLine>>,
     status_message: Option<String>,
     text_field: Entity<TextField>,
     editor: String,
@@ -479,7 +479,7 @@ impl FffPicker {
             if new_query != this.query {
                 this.query = new_query;
                 this.status_message = None;
-                this.selected_paths.clear();
+                Arc::make_mut(&mut this.selected_paths).clear();
                 this.preview_scroll_row = 0;
                 this.run_search(cx);
             }
@@ -498,12 +498,12 @@ impl FffPicker {
             },
             grep_mode: GrepMode::PlainText,
             query: String::new(),
-            results: Vec::new(),
+            results: Arc::new(Vec::new()),
             total_files: 0,
             total_matched: 0,
             indexed_count: 0,
             selected: 0,
-            selected_paths: BTreeSet::new(),
+            selected_paths: Arc::new(BTreeSet::new()),
             scan_done: false,
             search_epoch: 0,
             search_in_flight: false,
@@ -517,7 +517,7 @@ impl FffPicker {
             focus_handle: cx.focus_handle(),
             list_scroll: UniformListScrollHandle::new(),
             preview_scroll: UniformListScrollHandle::new(),
-            preview_lines: Vec::new(),
+            preview_lines: Arc::new(Vec::new()),
             status_message: None,
             text_field,
             editor,
@@ -856,12 +856,12 @@ impl FffPicker {
                         total_matched,
                         "applying search result"
                     );
-                    this.results = items;
+                    this.results = Arc::new(items);
                     this.total_files = total_files;
                     this.total_matched = total_matched;
                     this.selected = 0;
                     this.preview_scroll_row = 0;
-                    this.selected_paths
+                    Arc::make_mut(&mut this.selected_paths)
                         .retain(|path| this.results.iter().any(|item| &item.absolute_path == path));
                     if !this.results.is_empty() {
                         this.list_scroll.scroll_to_item(
@@ -913,12 +913,12 @@ impl FffPicker {
         if let Some(abort) = &self.search_abort {
             abort.store(true, Ordering::Release);
         }
-        self.results.clear();
+        Arc::make_mut(&mut self.results).clear();
         self.total_files = 0;
         self.total_matched = 0;
         self.selected = 0;
-        self.selected_paths.clear();
-        self.preview_lines.clear();
+        Arc::make_mut(&mut self.selected_paths).clear();
+        Arc::make_mut(&mut self.preview_lines).clear();
         self.preview_loading = false;
         self.preview_loading_visible = false;
         self.status_message = None;
@@ -935,7 +935,7 @@ impl FffPicker {
         let (path, grep_matches) = match self.results.get(self.selected) {
             Some(r) => (r.absolute_path.clone(), r.grep_matches.clone()),
             None => {
-                self.preview_lines = vec![];
+                self.preview_lines = Arc::new(vec![]);
                 self.preview_loading = false;
                 self.preview_loading_visible = false;
                 self.preview_scroll_row = 0;
@@ -999,7 +999,7 @@ impl FffPicker {
                         trace!(preview_epoch, "discarding stale preview result");
                         return;
                     }
-                    this.preview_lines = lines;
+                    this.preview_lines = Arc::new(lines);
                     this.preview_loading = false;
                     this.preview_loading_visible = false;
                     this.preview_start_line = start_line;
@@ -1214,8 +1214,9 @@ impl FffPicker {
         let Some(item) = self.results.get(self.selected) else {
             return;
         };
-        if !self.selected_paths.insert(item.absolute_path.clone()) {
-            self.selected_paths.remove(&item.absolute_path);
+        let paths = Arc::make_mut(&mut self.selected_paths);
+        if !paths.insert(item.absolute_path.clone()) {
+            paths.remove(&item.absolute_path);
         }
         cx.notify();
     }
@@ -1228,12 +1229,13 @@ impl FffPicker {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected_paths.is_empty() {
-            for item in &self.results {
-                self.selected_paths.insert(item.absolute_path.clone());
+        let paths = Arc::make_mut(&mut self.selected_paths);
+        if paths.is_empty() {
+            for item in &*self.results {
+                paths.insert(item.absolute_path.clone());
             }
         } else {
-            self.selected_paths.clear();
+            paths.clear();
         }
         cx.notify();
     }
