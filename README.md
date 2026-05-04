@@ -14,17 +14,53 @@ Under the hood it uses [fff](https://crates.io/crates/fff-search) for fuzzy file
 - Global keybind support for system-wide access
 - Deep Zed integration via custom tasks — works across all projects
 
-## Installation
+<details>
+<summary>
+<h2>Installation</h2>
+</summary>
 
 ### Homebrew (recommended)
 
+Apple Silicon only
 ```sh
 brew tap th0jensen/fff-gpui
 brew install fff-gpui
 brew services start fff-gpui
 ```
 
-## Configuration
+### Build from source
+
+**Requirements:**
+- macOS (Apple Silicon and Intel)
+- Latest stable Rust via [rustup](https://rustup.rs)
+- Xcode Command Line Tools (`xcode-select --install`)
+- CMake ([required by wasmtime](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/))
+- Zig 0.16.0 ([required by zlob](https://crates.io/crates/zlob))
+
+To compile without Zig, disable zlob in `Cargo.toml`. This will lead to slightly slower performance, but it's not required for the app to work.
+
+```toml
++ fff-search = "0.6"
++ fff-query-parser = "0.6"
+- fff-search = { version = "0.6", features = ["zlob"] }
+- fff-query-parser = { version = "0.6", features = ["zlob"] }
+```
+
+```sh
+git clone https://github.com/th0jensen/fff-gpui
+cd fff-gpui
+cargo build --release
+```
+
+The binary will be at `target/release/fff-gpui`. You can move it anywhere on your `$PATH` or reference it directly in your config.
+
+Having trouble building? Check Zed's [macOS troubleshooting guide](https://zed.dev/docs/development/macos#troubleshooting) — the build requirements are the same.
+</details>
+
+<details>
+<summary>
+<h2>Configuration</h2>
+</summary>
 
 Set options in `~/.config/fff-gpui/config.toml`:
 
@@ -55,8 +91,12 @@ Explicit config values still win, so you can keep Zed sync enabled and override 
 For `global_keybind`, `hyper` is accepted as a shorthand for `shift+control+alt+super`.
 
 Zed themes are discovered from the bundled theme set, your local Zed installation, and extension themes under `~/Library/Application Support/Zed/extensions/installed/`.
+</details>
 
-## Running
+<details>
+<summary>
+<h2>Running</h2>
+</summary>
 
 Launch fff-gpui once to start it as a background service with your global keybind:
 
@@ -66,7 +106,20 @@ fff-gpui
 
 If installed via Homebrew, `brew services start fff-gpui` handles this and re-launches it at login automatically.
 
-## Zed integration
+
+Launch fff-gpui with the `--open <path>` flag if you don't want the daemon running:
+
+```sh
+fff-gpui --open <path>
+```
+
+The daemon has a memory footprint of ~150mb idle and ~400mb when actively searching. Most of the reported usage in tools like btop is macOS page reservation and will be reclaimed under memory pressure. Report issues if you experience sustained growth beyond these baselines.
+</details>
+
+<details>
+<summary>
+<h2>Zed integration</h2>
+</summary>
 
 This is the recommended way to use fff-gpui within a project. Add the following to your Zed config files and replace `/path/to/fff-gpui` with the actual path to your binary.
 
@@ -115,35 +168,9 @@ This is the recommended way to use fff-gpui within a project. Add the following 
 }
 ```
 
+
 This opens fff-gpui scoped to the current project root. `cmd-k cmd-p` launches in file-search mode, `cmd-k cmd-f` launches directly in grep mode. Selected files open in Zed; with grep, the editor jumps to the matched line.
-
-## Build from source
-
-**Requirements:**
-- macOS (Apple Silicon and Intel)
-- Latest stable Rust via [rustup](https://rustup.rs)
-- Xcode Command Line Tools (`xcode-select --install`)
-- CMake ([required by wasmtime](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/))
-- Zig 0.16.0 ([required by zlob](https://crates.io/crates/zlob))
-
-To compile without Zig, disable zlob in `Cargo.toml`. This will lead to slightly slower performance, but it's not required for the app to work.
-
-```toml
-+ fff-search = "0.6"
-+ fff-query-parser = "0.6"
-- fff-search = { version = "0.6", features = ["zlob"] }
-- fff-query-parser = { version = "0.6", features = ["zlob"] }
-```
-
-```sh
-git clone https://github.com/th0jensen/fff-gpui
-cd fff-gpui
-cargo build --release
-```
-
-The binary will be at `target/release/fff-gpui`. You can move it anywhere on your `$PATH` or reference it directly in your config.
-
-Having trouble building? Check Zed's [macOS troubleshooting guide](https://zed.dev/docs/development/macos#troubleshooting) — the build requirements are the same.
+</details>
 
 ## License
 
