@@ -1,7 +1,7 @@
-use std::path::Path;
-use std::process::{Child, Command};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
+use std::path::Path;
+use std::process::{Child, Command};
 
 use anyhow::{Context as _, anyhow};
 use tracing::{debug, info, instrument};
