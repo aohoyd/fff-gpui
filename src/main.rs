@@ -407,7 +407,47 @@ fn open_config_file(runtime: &Arc<Mutex<RuntimeConfig>>) {
     }
 }
 
-// Open the main picker window centered on the primary display.
+#[cfg(target_os = "macos")]
+fn active_display_bounds() -> Option<Bounds<Pixels>> {
+    use cocoa::appkit::NSScreen;
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSPoint, NSRect};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let mouse: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+        let screens: id = NSScreen::screens(nil);
+        let count: usize = msg_send![screens, count];
+        if count == 0 {
+            return None;
+        }
+        let primary: id = msg_send![screens, objectAtIndex: 0usize];
+        let primary_h: f64 = NSScreen::frame(primary).size.height;
+        for i in 0..count {
+            let screen: id = msg_send![screens, objectAtIndex: i];
+            let frame: NSRect = NSScreen::frame(screen);
+            if mouse.x >= frame.origin.x
+                && mouse.x < frame.origin.x + frame.size.width
+                && mouse.y >= frame.origin.y
+                && mouse.y < frame.origin.y + frame.size.height
+            {
+                let gpui_y = primary_h - frame.origin.y - frame.size.height;
+                return Some(Bounds {
+                    origin: point(px(frame.origin.x as f32), px(gpui_y as f32)),
+                    size: size(px(frame.size.width as f32), px(frame.size.height as f32)),
+                });
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn active_display_bounds() -> Option<Bounds<Pixels>> {
+    None
+}
+
+// Open the main picker window centered on the active display.
 fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>>, cx: &mut App) {
     let (config, changed) = refresh_runtime_config(runtime_config);
     if changed {
@@ -425,10 +465,9 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
     let editor = config.editor.clone();
     let window_width = config.window_width;
     let window_height = config.window_height;
-    let bounds = cx
-        .primary_display()
-        .map(|d| {
-            let db = d.bounds();
+    let bounds = active_display_bounds()
+        .or_else(|| cx.primary_display().map(|d| d.bounds()))
+        .map(|db| {
             let x = db.origin.x + (db.size.width - px(window_width)) / 2.0;
             let y = db.origin.y + (db.size.height - px(window_height)) / 3.0;
             Bounds {
