@@ -3,10 +3,12 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - ci/test-universal
 permissions:
   contents: write
 jobs:
-  build-macos:
+  build-arm64:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,22 +17,72 @@ jobs:
           version: 0.16.0
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-      - name: Compile
-        run: cargo build --release
-      - name: Codesign app
-        run: |
-          APP="target/release/fff-gpui"
-          codesign --deep --force --sign - "$APP"
-      - name: Upload workflow artifact
+      - name: Compile arm64
+        run: cargo build --release --target aarch64-apple-darwin
+      - name: Codesign
+        run: codesign --deep --force --sign - target/aarch64-apple-darwin/release/fff-gpui
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fff-gpui
-          path: target/release/fff-gpui
-      - name: Publish GitHub release
+          name: fff-gpui-arm64
+          path: target/aarch64-apple-darwin/release/fff-gpui
+
+  build-x86_64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Compile x86_64
+        run: cargo build --release --target x86_64-apple-darwin
+      - name: Codesign
+        run: codesign --deep --force --sign - target/x86_64-apple-darwin/release/fff-gpui
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fff-gpui-x86_64
+          path: target/x86_64-apple-darwin/release/fff-gpui
+
+  release:
+    needs: [build-arm64, build-x86_64]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: fff-gpui-arm64
+          path: artifacts/arm64
+      - name: Download x86_64
+        uses: actions/download-artifact@v4
+        with:
+          name: fff-gpui-x86_64
+          path: artifacts/x86_64
+      - name: Create universal binary
+        run: |
+          lipo -create -output artifacts/fff-gpui-universal \
+            artifacts/arm64/fff-gpui \
+            artifacts/x86_64/fff-gpui
+          codesign --deep --force --sign - artifacts/fff-gpui-universal
+          cp artifacts/arm64/fff-gpui artifacts/fff-gpui-arm64
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          gh release create "$TAG" target/release/fff-gpui --generate-notes
+          gh release create "$TAG" \
+            artifacts/fff-gpui-universal \
+            artifacts/fff-gpui-arm64 \
+            --generate-notes
