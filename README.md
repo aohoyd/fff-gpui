@@ -21,7 +21,7 @@ Under the hood it uses [fff](https://crates.io/crates/fff-search) for fuzzy file
 
 ### Homebrew (recommended)
 
-Apple Silicon only
+Apple Silicon and Intel supported
 ```sh
 brew tap th0jensen/fff-gpui
 brew install fff-gpui
