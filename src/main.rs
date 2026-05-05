@@ -389,10 +389,10 @@ fn refresh_runtime_config(runtime_config: &Arc<Mutex<RuntimeConfig>>) -> (AppCon
 fn open_config_file(runtime: &Arc<Mutex<RuntimeConfig>>) {
     let (path, config) = match runtime.lock() {
         Ok(state) => (state.config_path.clone(), state.config.clone()),
-        Err(_) => (config::active_config_path(), AppConfig::default()),
+        Err(_) => (config::config_path(), AppConfig::default()),
     };
 
-    if let Err(err) = config::ensure_config_file(&path, &config) {
+    if let Err(err) = config::ensure_config_file(&path) {
         info!(error = %err, path = %path.display(), "failed to ensure config file");
         return;
     }
@@ -653,7 +653,7 @@ fn main() {
         Err(err) => {
             info!(error = %err, "failed to load config; falling back to defaults");
             config::LoadedConfig {
-                path: config::active_config_path(),
+                path: config::config_path(),
                 config: AppConfig::default(),
             }
         }

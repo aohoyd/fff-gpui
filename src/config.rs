@@ -135,7 +135,7 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn preferred_config_path() -> PathBuf {
+pub fn config_path() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         PathBuf::from(xdg).join("fff-gpui/config.toml")
     } else {
@@ -143,46 +143,19 @@ fn preferred_config_path() -> PathBuf {
     }
 }
 
-fn legacy_config_path() -> PathBuf {
-    home_dir().join(".fff-gpui.toml")
-}
-
 fn config_parent(path: &Path) -> Option<PathBuf> {
     path.parent().map(PathBuf::from)
 }
 
-pub fn active_config_path() -> PathBuf {
-    let preferred = preferred_config_path();
-    if preferred.exists() {
-        return preferred;
-    }
-
-    let legacy = legacy_config_path();
-    if legacy.exists() {
-        return legacy;
-    }
-
-    preferred
-}
-
 pub fn load_active_config() -> Result<LoadedConfig> {
-    let preferred = preferred_config_path();
-    let legacy = legacy_config_path();
+    let path = config_path();
 
-    let active = if preferred.exists() {
-        preferred
-    } else if legacy.exists() {
-        legacy
-    } else {
-        preferred
-    };
-
-    if !active.exists() {
-        ensure_config_file(&active, &AppConfig::default())?;
+    if !path.exists() {
+        ensure_config_file(&path)?;
     }
 
-    load_config_from(&active)
-        .with_context(|| format!("failed to load config from {}", active.display()))
+    load_config_from(&path)
+        .with_context(|| format!("failed to load config from {}", path.display()))
 }
 
 pub fn load_config_from(path: &Path) -> Result<LoadedConfig> {
@@ -227,7 +200,16 @@ pub fn load_config_from(path: &Path) -> Result<LoadedConfig> {
     })
 }
 
-pub fn ensure_config_file(path: &Path, config: &AppConfig) -> Result<()> {
+const DEFAULT_CONFIG: &str = "\
+sync_zed_settings = true
+editor = \"\"
+global_keybind = \"\"
+window_width = 960.0
+window_height = 520.0
+picker_pane_width = 430.0
+";
+
+pub fn ensure_config_file(path: &Path) -> Result<()> {
     if let Some(parent) = config_parent(path) {
         fs::create_dir_all(&parent)
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
@@ -237,18 +219,7 @@ pub fn ensure_config_file(path: &Path, config: &AppConfig) -> Result<()> {
         return Ok(());
     }
 
-    write_config(path, config)?;
-    Ok(())
-}
-
-pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
-    if let Some(parent) = config_parent(path) {
-        fs::create_dir_all(&parent)
-            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    }
-
-    let contents = toml::to_string_pretty(config).context("failed to serialize config")?;
-    fs::write(path, contents)
+    fs::write(path, DEFAULT_CONFIG)
         .with_context(|| format!("failed to write config file {}", path.display()))?;
     info!(path = %path.display(), "wrote default config");
     Ok(())
