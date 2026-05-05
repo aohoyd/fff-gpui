@@ -3,8 +3,6 @@ on:
   push:
     tags:
       - "v*"
-    branches:
-      - ci/test-universal
 permissions:
   contents: write
 jobs:
@@ -71,18 +69,17 @@ jobs:
           path: artifacts/x86_64
       - name: Create universal binary
         run: |
-          lipo -create -output artifacts/fff-gpui-universal \
+          lipo -create -output artifacts/fff-gpui-macos-universal \
             artifacts/arm64/fff-gpui \
             artifacts/x86_64/fff-gpui
-          codesign --deep --force --sign - artifacts/fff-gpui-universal
-          cp artifacts/arm64/fff-gpui artifacts/fff-gpui-arm64
+          codesign --deep --force --sign - artifacts/fff-gpui-macos-universal
+          cp artifacts/arm64/fff-gpui artifacts/fff-gpui-macos-arm64
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           gh release create "$TAG" \
-            artifacts/fff-gpui-universal \
-            artifacts/fff-gpui-arm64 \
+            artifacts/fff-gpui-macos-universal \
+            artifacts/fff-gpui-macos-arm64 \
             --generate-notes
