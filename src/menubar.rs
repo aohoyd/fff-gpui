@@ -105,6 +105,10 @@ mod mac {
                 open_menu_item_clicked as extern "C" fn(&Object, Sel, id),
             );
             decl.add_method(
+                sel!(configMenuItemClicked:),
+                config_menu_item_clicked as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
                 sel!(quitMenuItemClicked:),
                 quit_menu_item_clicked as extern "C" fn(&Object, Sel, id),
             );
@@ -143,7 +147,6 @@ mod mac {
         }
     }
 
-    #[allow(dead_code)]
     extern "C" fn config_menu_item_clicked(this: &Object, _: Sel, _: id) {
         unsafe {
             if let Some(state) = get_state(this).upgrade() {
