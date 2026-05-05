@@ -11,8 +11,8 @@ mod mac {
             NSApp, NSButton, NSEventMask, NSMenu, NSMenuItem, NSSquareStatusItemLength,
             NSStatusBar, NSStatusItem, NSView,
         },
-        base::{NO, id, nil},
-        foundation::{NSPoint, NSRect, NSString},
+        base::{NO, YES, id, nil},
+        foundation::{NSPoint, NSRect, NSSize, NSString},
     };
     use objc::{
         class,
@@ -60,7 +60,28 @@ mod mac {
             let native_item =
                 StrongPtr::retain(status_bar.statusItemWithLength_(NSSquareStatusItemLength));
             let button = native_item.button();
-            button.setTitle_(NSString::alloc(nil).init_str("🪿"));
+            let img_size = NSSize::new(18.0, 18.0);
+            let image: id = msg_send![class!(NSImage), alloc];
+            let image: id = msg_send![image, initWithSize: img_size];
+            let _: () = msg_send![image, lockFocus];
+            let font: id = msg_send![class!(NSFont), systemFontOfSize: 12.0_f64];
+            let attrs: id = msg_send![class!(NSMutableDictionary), dictionary];
+            let _: () = msg_send![attrs, setObject: font forKey: NSString::alloc(nil).init_str("NSFont")];
+            let alloc: id = msg_send![class!(NSAttributedString), alloc];
+            let attr_str: id = msg_send![
+                alloc,
+                initWithString: NSString::alloc(nil).init_str("🪿")
+                attributes: attrs
+            ];
+            let text_size: NSSize = msg_send![attr_str, size];
+            let draw_point = NSPoint::new(
+                (img_size.width - text_size.width) / 2.0,
+                (img_size.height - text_size.height) / 2.0,
+            );
+            let _: () = msg_send![attr_str, drawAtPoint: draw_point];
+            let _: () = msg_send![image, unlockFocus];
+            let _: () = msg_send![image, setTemplate: YES];
+            let _: () = msg_send![button, setImage: image];
             let _: () = msg_send![button, setToolTip: NSString::alloc(nil).init_str("fff-gpui")];
 
             let state = Rc::new(RefCell::new(StatusItemState {
