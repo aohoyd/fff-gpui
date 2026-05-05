@@ -28,7 +28,6 @@ pub enum ServiceCommand {
         in_grep: bool,
     },
     OpenConfig,
-    ShowPicker,
     ToggleWindow,
     Quit,
 }
@@ -230,7 +229,6 @@ mod tests {
     fn round_trip_unit_variants() {
         for cmd in [
             ServiceCommand::OpenConfig,
-            ServiceCommand::ShowPicker,
             ServiceCommand::ToggleWindow,
             ServiceCommand::Quit,
         ] {

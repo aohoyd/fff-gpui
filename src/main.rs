@@ -535,18 +535,6 @@ fn one_shot_session(
     session
 }
 
-fn show_or_focus_picker(
-    session: &Arc<Mutex<PickerSession>>,
-    runtime_config: &Arc<Mutex<RuntimeConfig>>,
-    cx: &mut App,
-) {
-    if cx.windows().is_empty() {
-        let session = snapshot_session(session);
-        info!(base_path = %session.base_path.display(), "reopening picker window");
-        open_window(session, runtime_config, cx);
-    }
-}
-
 fn wrap_responder(stream: Option<service::ClientStream>) -> Option<ResponderArc> {
     stream.map(|s| Arc::new(Mutex::new(Some(s))))
 }
@@ -561,10 +549,6 @@ fn handle_service_command(
 ) {
     let responder = wrap_responder(stream);
     match command {
-        ServiceCommand::ShowPicker => {
-            debug!("received show-picker service command");
-            show_or_focus_picker(session, runtime_config, cx)
-        }
         ServiceCommand::ToggleWindow => {
             debug!("received toggle-window service command");
             toggle_picker(session, runtime_config, cx)
@@ -756,11 +740,6 @@ fn main() {
     }
 
     let app = Application::new().with_assets(Assets);
-    if !one_shot_only {
-        let reopen_session = picker_session.clone();
-        let reopen_runtime_config = runtime_config.clone();
-        app.on_reopen(move |cx| show_or_focus_picker(&reopen_session, &reopen_runtime_config, cx));
-    }
 
     app.run(move |cx: &mut App| {
         FontAssets::load_fonts(cx).expect("failed to load bundled fonts");

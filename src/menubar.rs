@@ -138,7 +138,7 @@ mod mac {
         unsafe {
             if let Some(state) = get_state(this).upgrade() {
                 let commands = state.borrow().commands.clone();
-                let _ = commands.send_blocking((ServiceCommand::ShowPicker, None));
+                let _ = commands.send_blocking((ServiceCommand::ToggleWindow, None));
             }
         }
     }
