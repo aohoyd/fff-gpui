@@ -599,6 +599,7 @@ fn handle_service_command(
         }
         ServiceCommand::Quit => {
             debug!("received quit service command");
+            menubar::stop_service();
             cx.quit();
         }
     }

@@ -169,8 +169,8 @@ mod mac {
         let menu = NSMenu::new(nil);
         menu.setAutoenablesItems(NO);
         let open_title = NSString::alloc(nil).init_str("Open");
-        let config_title = NSString::alloc(nil).init_str("Open Config");
-        let quit_title = NSString::alloc(nil).init_str("Quit");
+        let config_title = NSString::alloc(nil).init_str("Config");
+        let quit_title = NSString::alloc(nil).init_str("Stop service");
         let empty = NSString::alloc(nil).init_str("");
         let open_item = NSMenuItem::alloc(nil).initWithTitle_action_keyEquivalent_(
             open_title,
@@ -217,6 +217,28 @@ mod mac {
         Weak::from_raw(raw as *const RefCell<StatusItemState>);
     }
 }
+
+#[cfg(target_os = "macos")]
+pub fn stop_service() {
+    unsafe extern "C" {
+        fn getppid() -> i32;
+    }
+    if unsafe { getppid() } != 1 {
+        return;
+    }
+    let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .copied();
+    if let Some(brew) = brew {
+        let _ = std::process::Command::new(brew)
+            .args(["services", "stop", "fff-gpui"])
+            .spawn();
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn stop_service() {}
 
 #[cfg(target_os = "macos")]
 pub use mac::install;
