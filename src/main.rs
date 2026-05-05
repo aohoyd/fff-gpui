@@ -412,9 +412,6 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
     let (config, changed) = refresh_runtime_config(runtime_config);
     if changed {
         let _ = apply_key_bindings(cx, &config, true);
-        if let Ok(mut state) = runtime_config.lock() {
-            register_global_hotkey(&mut state, &config);
-        }
     }
     theme::sync_from_config(&config, cx.window_appearance(), cx);
 
@@ -492,7 +489,13 @@ fn toggle_picker(
     cx: &mut App,
 ) {
     if cx.windows().is_empty() {
-        let (config, _) = refresh_runtime_config(runtime_config);
+        let (config, changed) = refresh_runtime_config(runtime_config);
+        if changed {
+            let _ = apply_key_bindings(cx, &config, true);
+            if let Ok(mut state) = runtime_config.lock() {
+                register_global_hotkey(&mut state, &config);
+            }
+        }
         let mut session = snapshot_session(session);
         session.base_path = resolve_base_path(&config.base_path);
         session.start_in_grep = false;
