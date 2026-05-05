@@ -98,6 +98,16 @@ For `global_keybind`, `hyper` is accepted as a shorthand for `shift+control+alt+
 `exclude_dirs` takes an array of directory paths. Relative entries are resolved from the current base path, so `["Library"]` excludes that directory anywhere under the opened scope. We do not currently support wildcard globbing here. In practice, plain directory names are enough for the system-wide picker use case this option targets, and they keep the config predictable.
 
 Zed themes are discovered from the bundled theme set, your local Zed installation, and extension themes under `~/Library/Application Support/Zed/extensions/installed/`.
+
+### Themes
+
+fff-gpui comes bundled with the same themes as Zed. These are the valid options:
+
+|       | Ayu        | Gruvbox            | One      |
+|-------|------------|--------------------|----------|
+| Dark  | Ayu Dark, Ayu Mirage | Gruvbox Dark, Gruvbox Dark Hard, Gruvbox Dark Soft | One Dark |
+| Light | Ayu Light  | Gruvbox Light, Gruvbox Light Hard, Gruvbox Light Soft | One Light |
+
 </details>
 
 <details>
