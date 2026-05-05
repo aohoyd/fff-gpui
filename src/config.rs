@@ -90,6 +90,8 @@ pub struct AppConfig {
     pub sync_zed_settings: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_keybind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_dirs: Vec<PathBuf>,
     #[serde(default = "default_window_width")]
@@ -110,6 +112,7 @@ impl Default for AppConfig {
             editor: String::new(),
             sync_zed_settings: true,
             global_keybind: None,
+            base_path: None,
             exclude_dirs: Vec::new(),
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,

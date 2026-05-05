@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use assets::{Assets, FontAssets};
+use fff_search::path_utils::expand_tilde;
 use global_hotkey::GlobalHotKeyManager;
 use gpui::prelude::*;
 use gpui::*;
@@ -128,6 +129,14 @@ fn home_dir() -> PathBuf {
 fn normalize_dir(path: PathBuf) -> Option<PathBuf> {
     path.is_dir()
         .then(|| std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+// Resolve the base path based on config
+fn resolve_base_path(base_path: &Option<String>) -> PathBuf {
+    base_path
+        .as_deref()
+        .and_then(|p| normalize_dir(expand_tilde(p)))
+        .unwrap_or_else(home_dir)
 }
 
 fn resolve_excluded_dirs(base_path: &Path, exclude_dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -483,8 +492,9 @@ fn toggle_picker(
     cx: &mut App,
 ) {
     if cx.windows().is_empty() {
+        let (config, _) = refresh_runtime_config(runtime_config);
         let mut session = snapshot_session(session);
-        session.base_path = home_dir();
+        session.base_path = resolve_base_path(&config.base_path);
         session.start_in_grep = false;
         session.responder = None;
         info!(base_path = %session.base_path.display(), "opening picker window");
