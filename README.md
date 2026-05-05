@@ -68,6 +68,7 @@ Set options in `~/.config/fff-gpui/config.toml`:
 editor = "/usr/local/bin/zed" # run `which $EDITOR` in your shell to find this path
 sync_zed_settings = true
 global_keybind = "hyper+f"
+base_dir = "~/Developer" # sets the default base_dir when launching from global keybind
 exclude_dirs = [
     "Library",
     "node_modules"
