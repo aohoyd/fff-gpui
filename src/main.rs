@@ -227,6 +227,14 @@ fn parse_launch_options() -> LaunchOptions {
     }
 }
 
+fn should_forward_to_running_instance(launch: &LaunchOptions) -> bool {
+    !launch.print_stdout
+}
+
+fn should_open_initial_picker(launch: &LaunchOptions) -> bool {
+    launch.open_path.is_some() || launch.print_stdout
+}
+
 fn print_help() {
     let help_msg = indoc! {"
         fff-gpui {version}
@@ -738,48 +746,51 @@ fn main() {
         "startup environment"
     );
 
-    let forward_command = match launch.open_path.clone() {
-        Some(path) => ServiceCommand::OpenOneShot {
-            path,
-            in_grep: launch.start_in_grep,
-        },
-        None => ServiceCommand::OpenPath {
-            path: base_path.clone(),
-            in_grep: launch.start_in_grep,
-        },
-    };
+    let one_shot_only = should_open_initial_picker(&launch);
+    if should_forward_to_running_instance(&launch) {
+        let forward_command = match launch.open_path.clone() {
+            Some(path) => ServiceCommand::OpenOneShot {
+                path,
+                in_grep: launch.start_in_grep,
+            },
+            None => ServiceCommand::OpenPath {
+                path: base_path.clone(),
+                in_grep: launch.start_in_grep,
+            },
+        };
 
-    match forward_to_running_instance(&forward_command)
-        .expect("failed to forward launch request to existing service")
-    {
-        ForwardOutcome::NoDaemon => {
-            info!("no resident service; this process will become the daemon");
-        }
-        ForwardOutcome::Picked(entries) => {
-            info!(count = entries.len(), "received pick response from daemon");
-            for entry in entries {
-                let goto = entry.line.zip(entry.column);
-                match editor::open_in_editor(&entry.path, goto, &loaded_config.config.editor) {
-                    Ok(mut child) => {
-                        let _ = child.wait();
-                    }
-                    Err(err) => {
-                        eprintln!("fff-gpui: failed to open {}: {err}", entry.path.display())
+        match forward_to_running_instance(&forward_command)
+            .expect("failed to forward launch request to existing service")
+        {
+            ForwardOutcome::NoDaemon => {
+                info!("no resident service; this process will become the daemon");
+            }
+            ForwardOutcome::Picked(entries) => {
+                info!(count = entries.len(), "received pick response from daemon");
+                for entry in entries {
+                    let goto = entry.line.zip(entry.column);
+                    match editor::open_in_editor(&entry.path, goto, &loaded_config.config.editor) {
+                        Ok(mut child) => {
+                            let _ = child.wait();
+                        }
+                        Err(err) => {
+                            eprintln!("fff-gpui: failed to open {}: {err}", entry.path.display())
+                        }
                     }
                 }
+                return;
             }
-            return;
         }
+    } else {
+        info!("stdout mode requested; skipping daemon forwarding");
     }
-
-    let one_shot_only = launch.open_path.is_some();
 
     let (service_tx, service_rx) = async_channel::unbounded::<CommandEnvelope>();
     if !one_shot_only {
         start_listener(service_tx.clone()).expect("failed to start launch request listener");
         info!("resident service listener started");
     } else {
-        info!("--open without resident daemon; running one-shot picker");
+        info!("running one-shot picker");
     }
 
     let app = Application::new().with_assets(Assets);
@@ -824,6 +835,19 @@ fn main() {
             open_window(
                 one_shot_session(
                     path,
+                    &one_shot_sessions,
+                    launch.start_in_grep,
+                    launch.print_stdout,
+                    None,
+                ),
+                &runtime_config,
+                cx,
+            );
+            cx.on_window_closed(|cx| cx.quit()).detach();
+        } else if launch.print_stdout {
+            open_window(
+                one_shot_session(
+                    base_path.clone(),
                     &one_shot_sessions,
                     launch.start_in_grep,
                     launch.print_stdout,
