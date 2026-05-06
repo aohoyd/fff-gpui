@@ -66,7 +66,8 @@ mod mac {
             let _: () = msg_send![image, lockFocus];
             let font: id = msg_send![class!(NSFont), systemFontOfSize: 12.0_f64];
             let attrs: id = msg_send![class!(NSMutableDictionary), dictionary];
-            let _: () = msg_send![attrs, setObject: font forKey: NSString::alloc(nil).init_str("NSFont")];
+            let _: () =
+                msg_send![attrs, setObject: font forKey: NSString::alloc(nil).init_str("NSFont")];
             let alloc: id = msg_send![class!(NSAttributedString), alloc];
             let attr_str: id = msg_send![
                 alloc,
@@ -241,22 +242,27 @@ mod mac {
 
 #[cfg(target_os = "macos")]
 pub fn stop_service() {
-    unsafe extern "C" {
-        fn getppid() -> i32;
-    }
-    if unsafe { getppid() } != 1 {
-        return;
-    }
-    let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .copied();
-    if let Some(brew) = brew {
-        let _ = std::process::Command::new(brew)
-            .args(["services", "stop", "fff-gpui"])
-            .spawn();
+    use tracing::warn;
+
+    let brew = BREW_PRIMARY;
+    match std::process::Command::new(brew)
+        .args(["services", "stop", "fff-gpui"])
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            warn!(?status, "brew services stop exited unsuccessfully");
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to run brew services stop");
+        }
     }
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const BREW_PRIMARY: &str = "/opt/homebrew/bin/brew";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const BREW_PRIMARY: &str = "/usr/local/bin/brew";
 
 #[cfg(not(target_os = "macos"))]
 pub fn stop_service() {}
