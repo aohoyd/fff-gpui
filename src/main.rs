@@ -405,7 +405,7 @@ fn open_config_file(runtime: &Arc<Mutex<RuntimeConfig>>) {
         return;
     }
 
-    match editor::open_in_editor(&path, None, &config.editor) {
+    match editor::open_in_editor(&path, None, &config.editor, editor::EditorLaunchMode::Detached) {
         Ok(child) => {
             info!(pid = child.id(), path = %path.display(), "opened config file");
         }
@@ -769,7 +769,12 @@ fn main() {
                 info!(count = entries.len(), "received pick response from daemon");
                 for entry in entries {
                     let goto = entry.line.zip(entry.column);
-                    match editor::open_in_editor(&entry.path, goto, &loaded_config.config.editor) {
+                    match editor::open_in_editor(
+                        &entry.path,
+                        goto,
+                        &loaded_config.config.editor,
+                        editor::EditorLaunchMode::Foreground,
+                    ) {
                         Ok(mut child) => {
                             let _ = child.wait();
                         }
