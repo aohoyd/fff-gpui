@@ -1145,7 +1145,12 @@ impl FffPicker {
                 opened += 1;
                 continue;
             }
-            match editor::open_in_editor(&entry.path, goto, &self.editor) {
+            match editor::open_in_editor(
+                &entry.path,
+                goto,
+                &self.editor,
+                editor::EditorLaunchMode::Detached,
+            ) {
                 Ok(child) => {
                     info!(pid = child.id(), path = %entry.path.display(), "spawned editor");
                     opened += 1;

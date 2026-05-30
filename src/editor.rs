@@ -19,6 +19,17 @@ pub enum EditorSource {
     Config,
 }
 
+// `Detached` puts the child in its own process group so a fire-and-forget
+// daemon-side spawn survives the parent exiting. `Foreground` leaves the
+// child in the parent's PG so terminal editors (hx, nvim, vim, …) can drive
+// the controlling TTY — used by the terminal-launched client that calls
+// `child.wait()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorLaunchMode {
+    Foreground,
+    Detached,
+}
+
 pub fn resolve_editor(config_editor: &str) -> Option<(EditorSource, String)> {
     env_editor("EDITOR")
         .map(|editor| (EditorSource::EnvEditor, editor))
@@ -30,11 +41,12 @@ pub fn resolve_editor(config_editor: &str) -> Option<(EditorSource, String)> {
 }
 
 // Spawn the user's $EDITOR or $VISUAL, falling back to config.editor when needed.
-#[instrument(skip(path, config_editor), fields(path = %path.display(), goto = ?goto))]
+#[instrument(skip(path, config_editor), fields(path = %path.display(), goto = ?goto, mode = ?mode))]
 pub fn open_in_editor(
     path: &Path,
     goto: Option<(usize, usize)>,
     config_editor: &str,
+    mode: EditorLaunchMode,
 ) -> anyhow::Result<Child> {
     let editor = resolve_editor(config_editor).map(|(_, editor)| editor).ok_or_else(|| {
         anyhow!(
@@ -47,7 +59,9 @@ pub fn open_in_editor(
 
     let mut cmd = editor_command(&editor, path, goto);
     #[cfg(unix)]
-    cmd.process_group(0);
+    if matches!(mode, EditorLaunchMode::Detached) {
+        cmd.process_group(0);
+    }
     cmd.spawn()
         .with_context(|| format!("failed to spawn editor command {:?}", editor))
 }
