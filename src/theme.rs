@@ -228,6 +228,8 @@ struct ZedSettings {
     ui_font_size: Option<f32>,
     #[serde(default)]
     buffer_font_size: Option<f32>,
+    #[serde(default)]
+    theme_overrides: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -669,6 +671,7 @@ pub struct SyntaxStyle {
 
 #[derive(Debug, Clone)]
 struct ThemeCatalogEntry {
+    style: Value,
     palette: Palette,
     syntax_styles: Vec<(String, SyntaxStyle)>,
     syntax_default_color: u32,
@@ -762,7 +765,7 @@ pub fn sync_from_config(config: &AppConfig, appearance: WindowAppearance, cx: &m
         None
     };
 
-    let (mut resolved, resolved_icon_theme) = if config.sync_zed_settings {
+    let (mut resolved, resolved_icon_theme, overrides) = if config.sync_zed_settings {
         match resolve_from_zed_settings(
             appearance,
             theme_catalog.as_ref(),
@@ -774,18 +777,26 @@ pub fn sync_from_config(config: &AppConfig, appearance: WindowAppearance, cx: &m
                     error = %err,
                     "failed to sync Zed theme settings; falling back to defaults"
                 );
-                (AppTheme::default(), default_file_icon_theme())
+                (
+                    AppTheme::default(),
+                    default_file_icon_theme(),
+                    HashMap::new(),
+                )
             }
         }
     } else {
-        (AppTheme::default(), default_file_icon_theme())
+        (
+            AppTheme::default(),
+            default_file_icon_theme(),
+            HashMap::new(),
+        )
     };
 
     if let Some(catalog) = theme_catalog.as_ref()
         && let Some(name) = config.theme.name.as_deref()
     {
         if !name.trim().is_empty() {
-            apply_named_theme(name, catalog, &mut resolved);
+            apply_theme_with_overrides(name, catalog, &overrides, &mut resolved);
         }
     }
 
@@ -930,6 +941,7 @@ fn hardcoded_zed_settings_defaults() -> ZedSettings {
         buffer_font_family: Some(DEFAULT_BUFFER_FONT_FAMILY.to_string()),
         ui_font_size: Some(DEFAULT_UI_FONT_SIZE),
         buffer_font_size: Some(DEFAULT_BUFFER_FONT_SIZE),
+        theme_overrides: HashMap::new(),
     }
 }
 
@@ -952,14 +964,19 @@ fn merge_zed_settings(settings: &mut ZedSettings, defaults: ZedSettings) {
     if settings.buffer_font_size.is_none() {
         settings.buffer_font_size = defaults.buffer_font_size;
     }
+    // `theme_overrides` is intentionally not defaults-merged: the hardcoded
+    // defaults carry an empty overrides map, so there is nothing to merge in and
+    // the user's parsed overrides (already keyed via `#[serde(default)]`) stand
+    // on their own.
 }
 
 fn resolve_from_zed_settings(
     appearance: WindowAppearance,
     theme_catalog: Option<&HashMap<String, ThemeCatalogEntry>>,
     icon_theme_catalog: Option<&HashMap<String, FileIconTheme>>,
-) -> Result<(AppTheme, FileIconTheme)> {
+) -> Result<(AppTheme, FileIconTheme, HashMap<String, Value>)> {
     let settings = load_zed_settings()?;
+    let overrides = normalized_theme_overrides(&settings.theme_overrides);
 
     let mut theme = AppTheme::default();
     if let Some(name) = settings
@@ -968,11 +985,7 @@ fn resolve_from_zed_settings(
         .map(|theme| resolve_theme_name(theme, appearance))
     {
         if let Some(catalog) = theme_catalog {
-            if let Some(entry) = catalog.get(&normalize_name(&name)) {
-                apply_catalog_entry(entry, &mut theme);
-            } else {
-                warn!(theme = %name, "Zed theme not found; using built-in fallback theme");
-            }
+            apply_theme_with_overrides(&name, catalog, &overrides, &mut theme);
         }
     } else {
         debug!(
@@ -981,20 +994,7 @@ fn resolve_from_zed_settings(
         );
     }
 
-    theme.ui_font_family = Some(
-        settings
-            .ui_font_family
-            .unwrap_or_else(|| DEFAULT_UI_FONT_FAMILY.to_string()),
-    );
-    theme.buffer_font_family = Some(
-        settings
-            .buffer_font_family
-            .unwrap_or_else(|| DEFAULT_BUFFER_FONT_FAMILY.to_string()),
-    );
-    theme.ui_font_size = settings.ui_font_size.unwrap_or(DEFAULT_UI_FONT_SIZE);
-    theme.buffer_font_size = settings
-        .buffer_font_size
-        .unwrap_or(DEFAULT_BUFFER_FONT_SIZE);
+    apply_font_settings(&settings, &mut theme);
 
     if let Some(icon_name) = settings
         .icon_theme
@@ -1010,14 +1010,29 @@ fn resolve_from_zed_settings(
                 );
                 default_file_icon_theme()
             });
-        Ok((theme, resolved_icon_theme))
+        Ok((theme, resolved_icon_theme, overrides))
     } else {
         debug!(
             settings_path = %zed_settings_path().display(),
             "no Zed icon theme configured; using built-in default icons"
         );
-        Ok((theme, default_file_icon_theme()))
+        Ok((theme, default_file_icon_theme(), overrides))
     }
+}
+
+fn apply_font_settings(settings: &ZedSettings, theme: &mut AppTheme) {
+    theme.ui_font_family = Some(
+        resolve_optional_string(settings.ui_font_family.as_deref(), None)
+            .unwrap_or_else(|| DEFAULT_UI_FONT_FAMILY.to_string()),
+    );
+    theme.buffer_font_family = Some(
+        resolve_optional_string(settings.buffer_font_family.as_deref(), None)
+            .unwrap_or_else(|| DEFAULT_BUFFER_FONT_FAMILY.to_string()),
+    );
+    theme.ui_font_size =
+        resolve_optional_font_size(settings.ui_font_size, None).unwrap_or(DEFAULT_UI_FONT_SIZE);
+    theme.buffer_font_size = resolve_optional_font_size(settings.buffer_font_size, None)
+        .unwrap_or(DEFAULT_BUFFER_FONT_SIZE);
 }
 
 fn resolve_theme_name(selection: &ThemeSelection, appearance: WindowAppearance) -> String {
@@ -1377,6 +1392,7 @@ fn load_theme_family_contents(
     for variant in family.themes {
         let theme_key = normalize_name(&variant.name);
         let entry = ThemeCatalogEntry {
+            style: variant.style.clone(),
             palette: palette_from_style(&variant.style),
             syntax_styles: syntax_styles_from_style(&variant.style),
             syntax_default_color: color_from_style(&variant.style, "editor.foreground")
@@ -1390,38 +1406,68 @@ fn load_theme_family_contents(
     Ok(())
 }
 
-fn apply_named_theme(
+fn apply_theme_with_overrides(
     name: &str,
     catalog: &HashMap<String, ThemeCatalogEntry>,
+    overrides: &HashMap<String, Value>,
     theme: &mut AppTheme,
 ) {
-    if let Some(entry) = catalog.get(&normalize_name(name)) {
-        apply_catalog_entry(entry, theme);
+    let key = normalize_name(name);
+    let Some(entry) = catalog.get(&key) else {
+        warn!(theme = %name, "theme not found in catalog");
+        return;
+    };
+    if let Some(override_style) = overrides.get(&key) {
+        let mut merged = entry.style.clone();
+        merge_json(&mut merged, override_style);
+        apply_style_to_theme(&merged, theme);
     } else {
-        warn!(theme = %name, "theme override not found in catalog");
+        apply_catalog_entry(entry, theme);
     }
 }
 
+fn normalized_theme_overrides(overrides: &HashMap<String, Value>) -> HashMap<String, Value> {
+    overrides
+        .iter()
+        .map(|(name, style)| (normalize_name(name), style.clone()))
+        .collect()
+}
+
+fn apply_palette(palette: &Palette, theme: &mut AppTheme) {
+    // `picker_pane_width` is intentionally not copied here: it is owned by config
+    // (resolved in `sync_from_config`), not the theme palette. Writing it would
+    // clobber the config-resolved value with the palette's default.
+    theme.bg = palette.bg;
+    theme.border = palette.border;
+    theme.selected_row = palette.selected_row;
+    theme.hover_row = palette.hover_row;
+    theme.text_primary = palette.text_primary;
+    theme.text_secondary = palette.text_secondary;
+    theme.text_dim = palette.text_dim;
+    theme.status_bar_bg = palette.status_bar_bg;
+    theme.match_highlight = palette.match_highlight;
+    theme.match_highlight_bg = palette.match_highlight_bg;
+    theme.preview_bg = palette.preview_bg;
+    theme.input_bg = palette.input_bg;
+    theme.input_text = palette.input_text;
+    theme.cursor = palette.cursor;
+    theme.cursor_selection = palette.cursor_selection;
+    theme.icon_muted = palette.icon_muted;
+    theme.icon_accent = palette.icon_accent;
+}
+
 fn apply_catalog_entry(entry: &ThemeCatalogEntry, theme: &mut AppTheme) {
-    theme.bg = entry.palette.bg;
-    theme.border = entry.palette.border;
-    theme.selected_row = entry.palette.selected_row;
-    theme.hover_row = entry.palette.hover_row;
-    theme.text_primary = entry.palette.text_primary;
-    theme.text_secondary = entry.palette.text_secondary;
-    theme.text_dim = entry.palette.text_dim;
-    theme.status_bar_bg = entry.palette.status_bar_bg;
-    theme.match_highlight = entry.palette.match_highlight;
-    theme.match_highlight_bg = entry.palette.match_highlight_bg;
-    theme.preview_bg = entry.palette.preview_bg;
-    theme.input_bg = entry.palette.input_bg;
-    theme.input_text = entry.palette.input_text;
-    theme.cursor = entry.palette.cursor;
-    theme.cursor_selection = entry.palette.cursor_selection;
-    theme.icon_muted = entry.palette.icon_muted;
-    theme.icon_accent = entry.palette.icon_accent;
+    apply_palette(&entry.palette, theme);
     theme.syntax_styles = entry.syntax_styles.clone();
     theme.syntax_default_color = entry.syntax_default_color;
+}
+
+fn apply_style_to_theme(style: &Value, theme: &mut AppTheme) {
+    apply_palette(&palette_from_style(style), theme);
+    theme.syntax_styles = syntax_styles_from_style(style);
+    theme.syntax_default_color = color_from_style(style, "editor.foreground")
+        .or_else(|| color_from_style(style, "text"))
+        .unwrap_or(DEFAULT_TEXT_PRIMARY);
 }
 
 fn resolve_optional_string(primary: Option<&str>, fallback: Option<&str>) -> Option<String> {
@@ -1505,6 +1551,16 @@ fn syntax_styles_from_style(style: &Value) -> Vec<(String, SyntaxStyle)> {
         .filter_map(|(name, style_value)| {
             if name == "background_color" {
                 return None;
+            }
+
+            if let Some(color) = style_value.as_str() {
+                return Some((
+                    name.clone(),
+                    SyntaxStyle {
+                        color: Some(color.to_owned()),
+                        ..SyntaxStyle::default()
+                    },
+                ));
             }
 
             let style_value = style_value.as_object()?;
@@ -1629,6 +1685,28 @@ fn apply_color(source: &Option<String>, target: &mut u32) {
     }
 }
 
+fn merge_json(base: &mut Value, overlay: &Value) {
+    match (base, overlay) {
+        (Value::Object(base_map), Value::Object(overlay_map)) => {
+            for (key, overlay_value) in overlay_map {
+                if overlay_value.is_null() {
+                    continue; // null = keep base
+                }
+                match base_map.get_mut(key) {
+                    Some(base_value) => merge_json(base_value, overlay_value),
+                    None => {
+                        base_map.insert(key.clone(), overlay_value.clone());
+                    }
+                }
+            }
+        }
+        (base_slot, overlay_value) if !overlay_value.is_null() => {
+            *base_slot = overlay_value.clone();
+        }
+        _ => {}
+    }
+}
+
 fn parse_color_rgb(color: &str) -> Option<u32> {
     let color = color.trim();
     let color = color.strip_prefix('#').unwrap_or(color);
@@ -1643,12 +1721,12 @@ fn parse_color_rgb(color: &str) -> Option<u32> {
             u32::from_str_radix(&expanded, 16).ok()
         }
         4 => {
-            let mut expanded = String::with_capacity(6);
-            for ch in color.chars().take(3) {
+            let mut expanded = String::with_capacity(8);
+            for ch in color.chars().take(4) {
                 expanded.push(ch);
                 expanded.push(ch);
             }
-            u32::from_str_radix(&expanded, 16).ok()
+            u32::from_str_radix(&expanded[..6], 16).ok()
         }
         6 => u32::from_str_radix(color, 16).ok(),
         8 => u32::from_str_radix(&color[..6], 16).ok(),
@@ -1668,10 +1746,53 @@ mod tests {
     }
 
     #[test]
+    fn merge_json_deep_merges_objects() {
+        let mut base = serde_json::json!({ "a": 1, "nested": { "x": 1, "y": 2 } });
+        let overlay = serde_json::json!({ "b": 2, "nested": { "y": 9, "z": 3 } });
+        merge_json(&mut base, &overlay);
+        assert_eq!(
+            base,
+            serde_json::json!({ "a": 1, "b": 2, "nested": { "x": 1, "y": 9, "z": 3 } })
+        );
+    }
+
+    #[test]
+    fn merge_json_null_overlay_keeps_base() {
+        let mut base = serde_json::json!({ "font_style": "italic", "color": "#fff" });
+        let overlay = serde_json::json!({ "font_style": null });
+        merge_json(&mut base, &overlay);
+        assert_eq!(
+            base,
+            serde_json::json!({ "font_style": "italic", "color": "#fff" })
+        );
+    }
+
+    #[test]
+    fn merge_json_non_object_overlay_replaces() {
+        let mut base = serde_json::json!({ "color": "#000" });
+        let overlay = serde_json::json!({ "color": "#fff" });
+        merge_json(&mut base, &overlay);
+        assert_eq!(base, serde_json::json!({ "color": "#fff" }));
+    }
+
+    #[test]
+    fn merge_json_adds_missing_object_key() {
+        let mut base = serde_json::json!({ "syntax": { "keyword": { "color": "#111" } } });
+        let overlay = serde_json::json!({ "syntax": { "boolean": { "color": "#222" } } });
+        merge_json(&mut base, &overlay);
+        assert_eq!(
+            base,
+            serde_json::json!({ "syntax": { "keyword": { "color": "#111" }, "boolean": { "color": "#222" } } })
+        );
+    }
+
+    #[test]
     fn parses_hex_colors() {
         assert_eq!(parse_color_rgb("#ff00aa"), Some(0xff00aa));
         assert_eq!(parse_color_rgb("#ff00aaff"), Some(0xff00aa));
         assert_eq!(parse_color_rgb("#f0a"), Some(0xff00aa));
+        assert_eq!(parse_color_rgb("#f0ab"), Some(0xff00aa));
+        assert_eq!(parse_color_rgb("#1234"), Some(0x112233));
     }
 
     #[test]
@@ -1726,11 +1847,551 @@ mod tests {
     }
 
     #[test]
+    fn applies_explicit_font_settings_from_zed() {
+        let settings = ZedSettings {
+            ui_font_family: Some("Test UI Font".to_string()),
+            buffer_font_family: Some("Test Buffer Font".to_string()),
+            ui_font_size: Some(20.0),
+            buffer_font_size: Some(13.5),
+            ..ZedSettings::default()
+        };
+
+        let mut theme = AppTheme {
+            ui_font_family: Some("Old UI".to_string()),
+            buffer_font_family: Some("Old Buffer".to_string()),
+            ui_font_size: 99.0,
+            buffer_font_size: 88.0,
+            ..AppTheme::default()
+        };
+        apply_font_settings(&settings, &mut theme);
+
+        assert_eq!(theme.ui_font_family, Some("Test UI Font".to_string()));
+        assert_eq!(
+            theme.buffer_font_family,
+            Some("Test Buffer Font".to_string())
+        );
+        assert_eq!(theme.ui_font_size, 20.0);
+        assert_eq!(theme.buffer_font_size, 13.5);
+    }
+
+    #[test]
+    fn falls_back_to_default_fonts_when_unset() {
+        let settings = ZedSettings::default();
+
+        let mut theme = AppTheme {
+            ui_font_family: Some("Old UI".to_string()),
+            buffer_font_family: Some("Old Buffer".to_string()),
+            ui_font_size: 99.0,
+            buffer_font_size: 88.0,
+            ..AppTheme::default()
+        };
+        apply_font_settings(&settings, &mut theme);
+
+        assert_eq!(
+            theme.ui_font_family,
+            Some(DEFAULT_UI_FONT_FAMILY.to_string())
+        );
+        assert_eq!(
+            theme.buffer_font_family,
+            Some(DEFAULT_BUFFER_FONT_FAMILY.to_string())
+        );
+        assert_eq!(theme.ui_font_size, DEFAULT_UI_FONT_SIZE);
+        assert_eq!(theme.buffer_font_size, DEFAULT_BUFFER_FONT_SIZE);
+    }
+
+    #[test]
+    fn falls_back_to_default_fonts_when_size_invalid() {
+        for invalid in [0.0_f32, -5.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let settings = ZedSettings {
+                ui_font_size: Some(invalid),
+                buffer_font_size: Some(invalid),
+                ..ZedSettings::default()
+            };
+
+            let mut theme = AppTheme {
+                ui_font_size: 99.0,
+                buffer_font_size: 88.0,
+                ..AppTheme::default()
+            };
+            apply_font_settings(&settings, &mut theme);
+
+            assert_eq!(theme.ui_font_size, DEFAULT_UI_FONT_SIZE);
+            assert_eq!(theme.buffer_font_size, DEFAULT_BUFFER_FONT_SIZE);
+        }
+    }
+
+    #[test]
+    fn falls_back_to_default_fonts_when_family_blank() {
+        for blank in ["", "   ", "\t"] {
+            let settings = ZedSettings {
+                ui_font_family: Some(blank.to_string()),
+                buffer_font_family: Some(blank.to_string()),
+                ..ZedSettings::default()
+            };
+
+            let mut theme = AppTheme {
+                ui_font_family: Some("Old UI".to_string()),
+                buffer_font_family: Some("Old Buffer".to_string()),
+                ..AppTheme::default()
+            };
+            apply_font_settings(&settings, &mut theme);
+
+            assert_eq!(
+                theme.ui_font_family,
+                Some(DEFAULT_UI_FONT_FAMILY.to_string())
+            );
+            assert_eq!(
+                theme.buffer_font_family,
+                Some(DEFAULT_BUFFER_FONT_FAMILY.to_string())
+            );
+            assert_eq!(theme.ui_font_size, DEFAULT_UI_FONT_SIZE);
+            assert_eq!(theme.buffer_font_size, DEFAULT_BUFFER_FONT_SIZE);
+        }
+    }
+
+    #[test]
     fn builtin_theme_catalog_includes_zed_themes() {
         let catalog = load_theme_catalog().expect("theme catalog should load");
 
         assert!(catalog.contains_key("ayu dark"));
         assert!(catalog.contains_key("gruvbox dark"));
         assert!(catalog.contains_key("one dark"));
+    }
+
+    #[test]
+    fn apply_style_to_theme_sets_palette_and_syntax() {
+        let style = serde_json::json!({
+            "background": "#101010",
+            "border": "#202020",
+            "editor.foreground": "#fafafa",
+            "syntax": { "keyword": { "color": "#abcdef" } }
+        });
+        let mut theme = AppTheme::default();
+        apply_style_to_theme(&style, &mut theme);
+        assert_eq!(theme.bg, 0x101010);
+        assert_eq!(theme.border, 0x202020);
+        assert_eq!(theme.syntax_default_color, 0xfafafa);
+        assert_eq!(theme.syntax_color("keyword"), 0xabcdef);
+    }
+
+    #[test]
+    fn catalog_entries_retain_raw_style() {
+        let catalog = load_theme_catalog().expect("catalog loads");
+        let entry = catalog.get("one dark").expect("one dark present");
+        assert!(entry.style.is_object());
+        assert!(entry.style.get("syntax").is_some());
+        // The raw style must retain a known One Dark syntax token, proving the
+        // full style object survived (not just an empty `syntax` key).
+        assert!(
+            entry
+                .style
+                .get("syntax")
+                .and_then(|s| s.get("keyword"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn override_merges_color_and_syntax_onto_base() {
+        let catalog = load_theme_catalog().expect("catalog loads");
+
+        // Capture the base One Dark color for a token we will NOT override, by
+        // applying the theme with an empty overrides map into a separate theme.
+        let mut base = AppTheme::default();
+        let empty = HashMap::new();
+        apply_theme_with_overrides("One Dark", &catalog, &empty, &mut base);
+        let base_string_color = base.syntax_color("string");
+
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("One Dark"),
+            serde_json::json!({
+                "background": "#123456",
+                "syntax": { "keyword": { "color": "#0f0f0f" } }
+            }),
+        );
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
+        assert_eq!(theme.bg, 0x123456); // overridden color
+        assert_eq!(theme.syntax_color("keyword"), 0x0f0f0f); // overridden token
+        // The non-overridden `string` token must still equal the captured base
+        // value, proving `merge_json` merged per-token instead of replacing the
+        // whole `syntax` object.
+        assert_eq!(theme.syntax_color("string"), base_string_color);
+    }
+
+    #[test]
+    fn synthetic_catalog_override_merges_per_syntax_token() {
+        // Filesystem-independent: build a catalog entry in-memory the same way
+        // the real loader (`load_theme_family_contents`) derives its fields.
+        let style = serde_json::json!({
+            "background": "#000000",
+            "editor.foreground": "#eeeeee",
+            "syntax": {
+                "keyword": { "color": "#111111" },
+                "string": { "color": "#222222" }
+            }
+        });
+        let entry = ThemeCatalogEntry {
+            palette: palette_from_style(&style),
+            syntax_styles: syntax_styles_from_style(&style),
+            syntax_default_color: color_from_style(&style, "editor.foreground")
+                .or_else(|| color_from_style(&style, "text"))
+                .unwrap_or(DEFAULT_TEXT_PRIMARY),
+            style,
+        };
+
+        let mut catalog = HashMap::new();
+        catalog.insert(normalize_name("Test Theme"), entry);
+
+        // Override only `keyword` and `background`; leave `string` untouched.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("Test Theme"),
+            serde_json::json!({
+                "background": "#333333",
+                "syntax": { "keyword": { "color": "#333333" } }
+            }),
+        );
+
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
+
+        assert_eq!(theme.syntax_color("keyword"), 0x333333); // overridden token
+        assert_eq!(theme.syntax_color("string"), 0x222222); // untouched base token
+        assert_eq!(theme.bg, 0x333333); // overridden background
+    }
+
+    #[test]
+    fn fff_config_color_wins_over_zed_override() {
+        // Asserts the documented precedence contract (Zed override first, then fff
+        // `[theme]` config last) rather than calling `sync_from_config` directly,
+        // which would require a `&mut App` (gpui) that is impractical to wire up in
+        // a unit test. This manually sequences `apply_theme_with_overrides` then
+        // `apply_color` exactly as `sync_from_config` does, so the explicit fff
+        // config must win for the same field.
+        let catalog = load_theme_catalog().expect("catalog loads");
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("One Dark"),
+            serde_json::json!({ "background": "#123456" }),
+        );
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
+        assert_eq!(theme.bg, 0x123456); // Zed override applied first
+
+        // fff `[theme].bg = "#abcdef"` applied last, exactly as `sync_from_config` does.
+        apply_color(&Some("#abcdef".to_string()), &mut theme.bg);
+        assert_eq!(theme.bg, 0xabcdef); // explicit fff config wins over the Zed override
+    }
+
+    #[test]
+    fn override_for_other_theme_does_not_apply() {
+        let catalog = load_theme_catalog().expect("catalog loads");
+
+        // Capture One Dark's real base `bg` by applying it with empty overrides.
+        let mut base = AppTheme::default();
+        let empty = HashMap::new();
+        apply_theme_with_overrides("One Dark", &catalog, &empty, &mut base);
+        let base_bg = base.bg;
+
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("Ayu Dark"),
+            serde_json::json!({ "background": "#123456" }),
+        );
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
+        assert_ne!(theme.bg, 0x123456); // One Dark selected; Ayu override must NOT apply
+        // The result must equal the real, un-overridden One Dark base color,
+        // proving the Ayu-keyed override was correctly ignored.
+        assert_eq!(theme.bg, base_bg);
+    }
+
+    #[test]
+    fn no_override_matches_plain_catalog_application() {
+        let catalog = load_theme_catalog().expect("catalog loads");
+        let empty = HashMap::new();
+        let mut with_helper = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &empty, &mut with_helper);
+
+        // The plain path: look up the catalog entry and apply it directly, exactly
+        // as the no-override fast path inside `apply_theme_with_overrides` does.
+        let mut plain = AppTheme::default();
+        let entry = catalog
+            .get(&normalize_name("One Dark"))
+            .expect("one dark present");
+        apply_catalog_entry(entry, &mut plain);
+
+        // `apply_theme_with_overrides` (empty overrides) must produce exactly the
+        // same `AppTheme` as the direct `apply_catalog_entry` path: full palette,
+        // syntax styles, and default color.
+        assert_eq!(with_helper, plain);
+    }
+
+    #[test]
+    fn zed_settings_parses_theme_overrides() {
+        let settings: ZedSettings = json5::from_str(
+            r##"{ "theme": "One Dark", "theme_overrides": { "One Dark": { "background": "#123456" } } }"##,
+        )
+        .expect("parses");
+        // The override entry is present and its nested payload survived deserialization.
+        let entry = settings
+            .theme_overrides
+            .get("One Dark")
+            .expect("One Dark override present");
+        assert_eq!(
+            entry.get("background").and_then(Value::as_str),
+            Some("#123456")
+        );
+        // The normalized lookup keys by `normalize_name`, preserving the payload.
+        let normalized = normalized_theme_overrides(&settings.theme_overrides);
+        let normalized_entry = normalized
+            .get(&normalize_name("One Dark"))
+            .expect("normalized override keyed by \"one dark\"");
+        assert_eq!(
+            normalized_entry.get("background").and_then(Value::as_str),
+            Some("#123456")
+        );
+    }
+
+    #[test]
+    fn syntax_styles_from_style_accepts_bare_string_color() {
+        // Zed `theme_overrides` (and `merge_json` results) can produce a syntax
+        // token written as a bare color string instead of a `{ "color": ... }`
+        // object. It must still be picked up as the token's color.
+        let style = serde_json::json!({
+            "syntax": {
+                "keyword": "#aabbcc",
+                "string": { "color": "#112233" }
+            }
+        });
+        let styles = syntax_styles_from_style(&style);
+        let keyword = styles
+            .iter()
+            .find(|(name, _)| name == "keyword")
+            .map(|(_, style)| style)
+            .expect("keyword present");
+        assert_eq!(keyword.color.as_deref(), Some("#aabbcc"));
+        assert_eq!(syntax_style_color(keyword), Some(0xaabbcc));
+    }
+
+    #[test]
+    fn mixed_case_override_key_applies_via_normalized_overrides() {
+        let catalog = load_theme_catalog().expect("catalog loads");
+        // Raw, mixed-case override key as it might appear in Zed's settings.json.
+        let mut raw_overrides = HashMap::new();
+        raw_overrides.insert(
+            "ONE DARK".to_string(),
+            serde_json::json!({ "background": "#123456" }),
+        );
+        let overrides = normalized_theme_overrides(&raw_overrides);
+
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
+        // Case-insensitive match works end-to-end: the override applied.
+        assert_eq!(theme.bg, 0x123456);
+    }
+
+    #[test]
+    fn apply_theme_with_overrides_leaves_theme_unchanged_when_absent() {
+        let catalog = load_theme_catalog().expect("catalog loads");
+
+        // Mutate `theme` into a clearly non-default state first, so the assertion
+        // can distinguish the early-return guard actually firing from a no-op on a
+        // freshly-defaulted theme. Apply a real bundled theme (One Dark).
+        let empty = HashMap::new();
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &empty, &mut theme);
+        assert_ne!(
+            theme,
+            AppTheme::default(),
+            "precondition: theme must be non-default before the absent lookup"
+        );
+        let before = theme.clone();
+
+        // A non-empty overrides map keyed on the (also absent) target proves that
+        // the absent-theme path mutates nothing even when a matching override key
+        // exists, since the catalog lookup misses and returns early.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("Nonexistent Theme XYZ"),
+            serde_json::json!({ "background": "#123456" }),
+        );
+
+        apply_theme_with_overrides("Nonexistent Theme XYZ", &catalog, &overrides, &mut theme);
+        // Theme not in catalog: nothing is applied and nothing panics.
+        assert_eq!(theme, before);
+    }
+
+    #[test]
+    fn dynamic_selection_applies_override_for_resolved_variant_only() {
+        let catalog = load_theme_catalog().expect("catalog loads");
+        let selection = ThemeSelection::Dynamic {
+            mode: ThemeMode::System,
+            light: "One Light".to_string(),
+            dark: "One Dark".to_string(),
+        };
+        // In Dark appearance the resolved variant is "One Dark".
+        let resolved = resolve_theme_name(&selection, WindowAppearance::Dark);
+        assert_eq!(resolved, "One Dark");
+
+        // An override keyed on the RESOLVED variant applies.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("One Dark"),
+            serde_json::json!({ "background": "#123456" }),
+        );
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides(&resolved, &catalog, &overrides, &mut theme);
+        assert_eq!(theme.bg, 0x123456);
+
+        // Capture the resolved variant's real base bg (apply One Dark with EMPTY
+        // overrides) so the negative half can prove the base was applied, not just
+        // that the wrong-variant sentinel is absent.
+        let mut base = AppTheme::default();
+        apply_theme_with_overrides(&resolved, &catalog, &HashMap::new(), &mut base);
+        let base_bg = base.bg;
+
+        // An override keyed on the OTHER variant ("One Light") does not apply; the
+        // resolved base ("One Dark") is applied via `apply_catalog_entry` instead.
+        let sentinel = 0x654321;
+        let mut other_overrides = HashMap::new();
+        other_overrides.insert(
+            normalize_name("One Light"),
+            serde_json::json!({ "background": "#654321" }),
+        );
+        let mut other_theme = AppTheme::default();
+        apply_theme_with_overrides(&resolved, &catalog, &other_overrides, &mut other_theme);
+        assert_ne!(other_theme.bg, sentinel);
+        // Proves the resolved base ran and the wrong-variant override did NOT apply.
+        assert_eq!(other_theme.bg, base_bg);
+    }
+
+    #[test]
+    fn malformed_hex_in_syntax_override_falls_back_to_default() {
+        // Filesystem-independent synthetic catalog entry. A syntax override with an
+        // invalid color string must silently fall back to `syntax_default_color`
+        // (the documented behavior) rather than panicking or corrupting the token.
+        let style = serde_json::json!({
+            "background": "#000000",
+            "editor.foreground": "#eeeeee",
+            "syntax": {
+                "keyword": { "color": "#111111" },
+                "string": { "color": "#222222" }
+            }
+        });
+        let entry = ThemeCatalogEntry {
+            palette: palette_from_style(&style),
+            syntax_styles: syntax_styles_from_style(&style),
+            syntax_default_color: color_from_style(&style, "editor.foreground")
+                .or_else(|| color_from_style(&style, "text"))
+                .unwrap_or(DEFAULT_TEXT_PRIMARY),
+            style,
+        };
+
+        let mut catalog = HashMap::new();
+        catalog.insert(normalize_name("Test Theme"), entry);
+
+        // Override two tokens in the SAME payload: `keyword` with a malformed color,
+        // and `string` with a valid one. The valid token proves overrides in this
+        // payload actually reach the merge, so a regression that silently drops
+        // overrides would fail here rather than masquerading as the fallback.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("Test Theme"),
+            serde_json::json!({ "syntax": {
+                "keyword": { "color": "#zzzzzz" },
+                "string": { "color": "#44aa55" }
+            } }),
+        );
+
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
+
+        // The valid override reached the merge and applied.
+        assert_eq!(theme.syntax_color("string"), 0x44aa55);
+        // The malformed color is unparseable, so `keyword` resolves to the theme's
+        // default foreground color (0xeeeeee), not the bogus override.
+        assert_eq!(theme.syntax_default_color, 0xeeeeee);
+        assert_eq!(theme.syntax_color("keyword"), 0xeeeeee);
+    }
+
+    #[test]
+    fn zed_settings_parses_empty_theme_overrides() {
+        // An explicit empty object must deserialize cleanly and yield an empty map,
+        // matching the `#[serde(default)]` (omitted) boundary case.
+        let settings: ZedSettings =
+            json5::from_str(r##"{ "theme": "One Dark", "theme_overrides": {} }"##).expect("parses");
+        assert!(settings.theme_overrides.is_empty());
+    }
+
+    #[test]
+    fn merge_json_scalar_base_replaced_by_object_overlay() {
+        let mut base = serde_json::json!({ "k": "scalar" });
+        let overlay = serde_json::json!({ "k": { "a": 1 } });
+        merge_json(&mut base, &overlay);
+        assert_eq!(base, serde_json::json!({ "k": { "a": 1 } }));
+    }
+
+    #[test]
+    fn merge_json_object_base_replaced_by_scalar_overlay() {
+        // The realistic "bare string stomps object" case: an override writes a
+        // syntax token (or whole `syntax` map) as a bare color string, replacing
+        // the base object wholesale.
+        let mut base = serde_json::json!({ "syntax": { "keyword": { "color": "#111" } } });
+        let overlay = serde_json::json!({ "syntax": "#aabbcc" });
+        merge_json(&mut base, &overlay);
+        assert_eq!(base["syntax"], serde_json::json!("#aabbcc"));
+    }
+
+    #[test]
+    fn null_override_leaves_base_unchanged_through_pipeline() {
+        // Exercises the `null` = no-op contract through the full
+        // `apply_theme_with_overrides` pipeline (not just `merge_json`): a null
+        // override leaves the base value intact, while a sibling non-null override
+        // in the same payload still applies.
+        let style = serde_json::json!({
+            "background": "#000000",
+            "editor.foreground": "#eeeeee",
+            "syntax": {
+                "keyword": { "color": "#111111" },
+                "string": { "color": "#222222" }
+            }
+        });
+        let entry = ThemeCatalogEntry {
+            palette: palette_from_style(&style),
+            syntax_styles: syntax_styles_from_style(&style),
+            syntax_default_color: color_from_style(&style, "editor.foreground")
+                .or_else(|| color_from_style(&style, "text"))
+                .unwrap_or(DEFAULT_TEXT_PRIMARY),
+            style,
+        };
+
+        let mut catalog = HashMap::new();
+        catalog.insert(normalize_name("Test Theme"), entry);
+
+        // `keyword.color` and `background` are nulled (no-op); `string` is a real
+        // sibling override that must still apply.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("Test Theme"),
+            serde_json::json!({
+                "background": null,
+                "syntax": {
+                    "keyword": { "color": null },
+                    "string": { "color": "#44aa55" }
+                }
+            }),
+        );
+
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
+
+        // Null left the base values untouched.
+        assert_eq!(theme.syntax_color("keyword"), 0x111111);
+        assert_eq!(theme.bg, 0x000000);
+        // The sibling non-null override still applied.
+        assert_eq!(theme.syntax_color("string"), 0x44aa55);
     }
 }

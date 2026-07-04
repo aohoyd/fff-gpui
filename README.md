@@ -39,12 +39,16 @@ brew services start fff-gpui
 
 To compile without Zig, disable zlob in `Cargo.toml`. This will lead to slightly slower performance, but it's not required for the app to work.
 
-```toml
-+ fff-search = "0.6"
-+ fff-query-parser = "0.6"
-- fff-search = { version = "0.6", features = ["zlob"] }
-- fff-query-parser = { version = "0.6", features = ["zlob"] }
+In `Cargo.toml`, replace the `-` lines with the `+` lines:
+
+```diff
++ fff-search = "0.9.6"
++ fff-query-parser = "0.9.6"
+- fff-search = { version = "0.9.6", features = ["zlob"] }
+- fff-query-parser = { version = "0.9.6", features = ["zlob"] }
 ```
+
+`fff-grep` (`version = "0.9.6"`) has no zlob feature, so leave it unchanged.
 
 ```sh
 git clone https://github.com/th0jensen/fff-gpui
@@ -89,9 +93,9 @@ name = "One Dark"
 
 `editor` is a fallback for the resident Homebrew service, which does not inherit your shell environment. If `EDITOR` or `VISUAL` is present in the current process, those still win, so custom tasks and other integrations can keep overriding it naturally.
 
-When `sync_zed_settings` is enabled, fff-gpui reads Zed's `settings.json` and mirrors the UI font, buffer font, font sizes, light/dark theme selection, and theme colors — from the bundled Zed themes plus any installed or local Zed theme.
+When `sync_zed_settings` is enabled, fff-gpui reads Zed's `settings.json` and mirrors the UI font, buffer font, font sizes, light/dark theme selection, theme colors, and any `theme_overrides` you've set for the theme fff-gpui actually applies — Zed's selected theme, or the one you pin via `[theme].name` — from the bundled Zed themes plus any installed or local Zed theme.
 
-Explicit config values still win, so you can keep Zed sync enabled and override just the theme, fonts, sizes, or specific colors when needed. In practice, `[theme].name` overrides Zed's chosen theme, and `[font]` overrides the synced font families and sizes.
+Explicit config values still win, so you can keep Zed sync enabled and override just the theme, fonts, sizes, or specific colors when needed. In practice, `[theme].name` overrides Zed's chosen theme, and `[font]` overrides the synced font families and sizes. If your Zed `settings.json` defines `theme_overrides` for the theme fff-gpui ends up applying (Zed's selected theme, or your `[theme].name`), those tweaks are deep-merged on top of it — any style key the override sets (palette colors, syntax styles, and any other Zed theme key) is honored. A `null` value for an entry leaves the base theme's value unchanged rather than resetting it. Any colors you set explicitly under `[theme]` in fff-gpui's config still take precedence.
 
 For `global_keybind`, `hyper` is accepted as a shorthand for `shift+control+alt+super`.
 
