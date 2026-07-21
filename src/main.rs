@@ -471,6 +471,7 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
     let base_path = session.base_path;
     let shared = session.shared;
     let enable_content_indexing = session.enable_content_indexing;
+    let follow_symlinks = config.follow_symlinks;
     let start_in_grep = session.start_in_grep;
     let excluded_dirs = resolve_excluded_dirs(&base_path, &config.exclude_dirs);
     let print_stdout = session.print_stdout;
@@ -507,6 +508,7 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
                     base_path.clone(),
                     shared.clone(),
                     enable_content_indexing,
+                    follow_symlinks,
                     start_in_grep,
                     excluded_dirs.clone(),
                     print_stdout,

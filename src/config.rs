@@ -94,6 +94,8 @@ pub struct AppConfig {
     pub base_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_dirs: Vec<PathBuf>,
+    #[serde(default)]
+    pub follow_symlinks: bool,
     #[serde(default = "default_window_width")]
     pub window_width: f32,
     #[serde(default = "default_window_height")]
@@ -114,6 +116,7 @@ impl Default for AppConfig {
             global_keybind: None,
             base_path: None,
             exclude_dirs: Vec::new(),
+            follow_symlinks: false,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
             picker_pane_width: DEFAULT_PICKER_PANE_WIDTH,
@@ -223,4 +226,23 @@ pub fn ensure_config_file(path: &Path) -> Result<()> {
         .with_context(|| format!("failed to write config file {}", path.display()))?;
     info!(path = %path.display(), "wrote default config");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn follow_symlinks_defaults_to_false() {
+        assert!(!AppConfig::default().follow_symlinks);
+        // Absent from the file, serde falls back to the default.
+        let config: AppConfig = toml::from_str("editor = \"\"").unwrap();
+        assert!(!config.follow_symlinks);
+    }
+
+    #[test]
+    fn follow_symlinks_parses_from_toml() {
+        let config: AppConfig = toml::from_str("follow_symlinks = true").unwrap();
+        assert!(config.follow_symlinks);
+    }
 }

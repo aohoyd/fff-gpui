@@ -479,6 +479,7 @@ impl FffPicker {
         base_path: PathBuf,
         shared: PickerSharedState,
         enable_content_indexing: bool,
+        follow_symlinks: bool,
         start_in_grep: bool,
         excluded_dirs: Vec<PathBuf>,
         print_stdout: bool,
@@ -542,7 +543,7 @@ impl FffPicker {
             responder,
         };
 
-        instance.start_scan(base_path, enable_content_indexing, cx);
+        instance.start_scan(base_path, enable_content_indexing, follow_symlinks, cx);
         instance
     }
 
@@ -563,11 +564,12 @@ impl FffPicker {
     }
 
     // Start the file indexer and trigger the initial search when indexing is ready.
-    #[tracing::instrument(skip(self, cx, base_path), fields(base_path = %base_path.display(), enable_content_indexing))]
+    #[tracing::instrument(skip(self, cx, base_path), fields(base_path = %base_path.display(), enable_content_indexing, follow_symlinks))]
     fn start_scan(
         &mut self,
         base_path: PathBuf,
         enable_content_indexing: bool,
+        follow_symlinks: bool,
         cx: &mut Context<Self>,
     ) {
         let sp = self.shared_picker.clone();
@@ -676,8 +678,17 @@ impl FffPicker {
                                 ..ContentCacheBudget::default()
                             }),
                             enable_content_indexing,
+                            follow_symlinks,
                             mode: FFFMode::Neovim,
-                            watch: false,
+                            // Keep the resident index live: fff-search's
+                            // background watcher applies create/modify/delete
+                            // events to the in-memory file list in real time,
+                            // so files created after the daemon started are
+                            // searchable without a restart (matching fff.nvim).
+                            // The watcher installs after the initial snapshot
+                            // and fails soft (logs, static index) for home/root
+                            // base paths, so this never blocks or breaks a scan.
+                            watch: true,
                             ..Default::default()
                         },
                     ) {

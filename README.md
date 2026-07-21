@@ -42,13 +42,13 @@ To compile without Zig, disable zlob in `Cargo.toml`. This will lead to slightly
 In `Cargo.toml`, replace the `-` lines with the `+` lines:
 
 ```diff
-+ fff-search = "0.9.6"
-+ fff-query-parser = "0.9.6"
-- fff-search = { version = "0.9.6", features = ["zlob"] }
-- fff-query-parser = { version = "0.9.6", features = ["zlob"] }
++ fff-search = "0.10.1"
++ fff-query-parser = "0.10.1"
+- fff-search = { version = "0.10.1", features = ["zlob"] }
+- fff-query-parser = { version = "0.10.1", features = ["zlob"] }
 ```
 
-`fff-grep` (`version = "0.9.6"`) has no zlob feature, so leave it unchanged.
+`fff-grep` (`version = "0.10.1"`) has no zlob feature, so leave it unchanged.
 
 ```sh
 git clone https://github.com/th0jensen/fff-gpui
@@ -77,6 +77,7 @@ exclude_dirs = [
     "Library",
     "node_modules"
 ]
+follow_symlinks = false # set true to index through symlinked directories
 window_width = 960.0
 window_height = 520.0
 picker_pane_width = 430.0
@@ -98,6 +99,10 @@ When `sync_zed_settings` is enabled, fff-gpui reads Zed's `settings.json` and mi
 Explicit config values still win, so you can keep Zed sync enabled and override just the theme, fonts, sizes, or specific colors when needed. In practice, `[theme].name` overrides Zed's chosen theme, and `[font]` overrides the synced font families and sizes. If your Zed `settings.json` defines `theme_overrides` for the theme fff-gpui ends up applying (Zed's selected theme, or your `[theme].name`), those tweaks are deep-merged on top of it — any style key the override sets (palette colors, syntax styles, and any other Zed theme key) is honored. A `null` value for an entry leaves the base theme's value unchanged rather than resetting it. Any colors you set explicitly under `[theme]` in fff-gpui's config still take precedence.
 
 For `global_keybind`, `hyper` is accepted as a shorthand for `shift+control+alt+super`.
+
+`follow_symlinks` (default `false`) controls whether the indexer descends into symlinked directories. Leave it off unless you keep sources behind symlinks (e.g. a stowed dotfiles layout) that you want to search.
+
+In grep mode, patterns can match across lines: include a literal `\n` in your query (for example `fn foo\n`) and matches spanning consecutive lines are returned.
 
 `exclude_dirs` takes an array of directory paths. Relative entries are resolved from the current base path, so `["Library"]` excludes that directory anywhere under the opened scope. We do not currently support wildcard globbing here. In practice, plain directory names are enough for the system-wide picker use case this option targets, and they keep the config predictable.
 

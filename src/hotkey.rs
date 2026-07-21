@@ -58,6 +58,8 @@ mod tests {
     #[test]
     fn expands_hyper_into_all_modifiers() {
         assert_eq!(expand_hyper("hyper+f"), "shift+control+alt+super+f");
-        assert_eq!(expand_hyper("cmd-hyper-f"), "cmd+shift+control+alt+super+f");
+        // `expand_hyper` runs after `parse_hotkey` has normalized `-` to `+`,
+        // so it only ever sees plus-separated tokens.
+        assert_eq!(expand_hyper("cmd+hyper+f"), "cmd+shift+control+alt+super+f");
     }
 }
