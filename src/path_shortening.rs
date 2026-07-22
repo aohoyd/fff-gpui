@@ -191,3 +191,104 @@ impl PathShortenStrategy {
         s.chars().take(max_len).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::MAIN_SEPARATOR;
+
+    // Join components with the platform separator so expectations match the
+    // algorithm's own `MAIN_SEPARATOR` usage on every target.
+    fn joined(parts: &[&str]) -> String {
+        parts.join(&MAIN_SEPARATOR.to_string())
+    }
+
+    fn shorten(path: &str, max: usize) -> String {
+        // `path` is written with '/'; rebuild it with the platform separator so
+        // the input parses into the same components everywhere.
+        let native = joined(&path.split('/').collect::<Vec<_>>());
+        PathShortenStrategy::MiddleNumber.shorten_path(Path::new(&native), max)
+    }
+
+    #[test]
+    fn returns_path_unchanged_when_it_already_fits() {
+        assert_eq!(shorten("src/main.rs", 20), joined(&["src", "main.rs"]));
+    }
+
+    #[test]
+    fn exact_fit_is_returned_verbatim() {
+        // "abc/def" is exactly 7 chars for a budget of 7.
+        assert_eq!(shorten("abc/def", 7), joined(&["abc", "def"]));
+    }
+
+    #[test]
+    fn budget_below_smart_threshold_raw_truncates_the_whole_string() {
+        // Budget < MIN_SMART_SHORTEN_SIZE (8): raw first-`max` chars of the path.
+        let native = joined(&["aaaa", "bbbb", "cccc"]);
+        assert_eq!(
+            shorten("aaaa/bbbb/cccc", 5),
+            native.chars().take(5).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn zero_budget_yields_empty_string() {
+        assert_eq!(shorten("abc/def", 0), "");
+    }
+
+    #[test]
+    fn single_component_truncates_to_budget() {
+        assert_eq!(shorten("abcdefghijklmnop", 10), "abcdefghij");
+    }
+
+    #[test]
+    fn two_component_preserves_filename_and_truncates_dir() {
+        assert_eq!(
+            shorten("longdirname/file.rs", 15),
+            joined(&["longdir", "file.rs"])
+        );
+    }
+
+    #[test]
+    fn two_component_truncates_filename_when_it_cannot_fit() {
+        assert_eq!(shorten("dir/verylongfilename.txt", 10), "verylongfi");
+    }
+
+    #[test]
+    fn multi_component_elides_middle_with_marker() {
+        // Six components, budget 9: prefix + numeric-free marker + suffix.
+        let out = shorten("a/b/c/d/e/f", 9);
+        assert_eq!(out, joined(&["a", "...", "e", "f"]));
+        assert!(out.len() <= 9);
+    }
+
+    #[test]
+    fn multi_component_keeps_last_when_prefix_wont_fit() {
+        // first+last+overhead too large, but the last still fits after a
+        // truncated first: "aa/../dddddd".
+        let out = shorten("aaaaaa/bb/cc/dddddd", 12);
+        assert_eq!(out, joined(&["aa", "..", "dddddd"]));
+        assert!(out.len() <= 12);
+    }
+
+    #[test]
+    fn multi_component_drops_prefix_when_only_marker_and_last_fit() {
+        let out = shorten("aaaa/bb/cc/dddddddd", 11);
+        assert_eq!(out, joined(&["..", "dddddddd"]));
+        assert!(out.len() <= 11);
+    }
+
+    #[test]
+    fn multi_component_truncates_last_when_it_alone_overflows() {
+        assert_eq!(shorten("aa/bb/superlongfilename", 10), "superlongf");
+    }
+
+    #[test]
+    fn multibyte_single_component_truncates_by_char_not_byte() {
+        // Greek letters are two bytes each; truncation counts characters and
+        // must never split a code point.
+        let out = shorten("αβγδεζηθικλμν", 8);
+        assert_eq!(out, "αβγδεζηθ");
+        assert_eq!(out.chars().count(), 8);
+    }
+}

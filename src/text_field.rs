@@ -5,8 +5,9 @@ use gpui::{
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    point, prelude::*, px, relative, rgb, rgba, size,
+    point, prelude::*, px, relative, rgba, size,
 };
+use tracing::warn;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme;
@@ -220,44 +221,21 @@ impl TextField {
 
     // Extend the selection to a byte offset.
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if self.selection_reversed {
-            self.selected_range.start = offset;
-        } else {
-            self.selected_range.end = offset;
-        }
-        if self.selected_range.end < self.selected_range.start {
-            self.selection_reversed = !self.selection_reversed;
-            self.selected_range = self.selected_range.end..self.selected_range.start;
-        }
+        let (range, reversed) =
+            selection_after_select_to(self.selected_range.clone(), self.selection_reversed, offset);
+        self.selected_range = range;
+        self.selection_reversed = reversed;
         cx.notify();
     }
 
     // Convert a UTF-16 offset to a UTF-8 byte offset.
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-        utf8_offset
+        offset_from_utf16(&self.content, offset)
     }
 
     // Convert a UTF-8 byte offset to a UTF-16 offset.
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-        for ch in self.content.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
-        utf16_offset
+        offset_to_utf16(&self.content, offset)
     }
 
     // Convert a UTF-8 byte range to a UTF-16 range.
@@ -272,20 +250,86 @@ impl TextField {
 
     // Find the previous grapheme boundary before an offset.
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(index, _)| (index < offset).then_some(index))
-            .unwrap_or(0)
+        previous_boundary(&self.content, offset)
     }
 
     // Find the next grapheme boundary after an offset.
     fn next_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .find_map(|(index, _)| (index > offset).then_some(index))
-            .unwrap_or(self.content.len())
+        next_boundary(&self.content, offset)
     }
+}
+
+// Pure, gpui-free helpers backing the field's editing methods. Extracted so the
+// grapheme/UTF-16/selection logic is unit-testable without a gpui `Context` or
+// `FocusHandle` (see `#[cfg(test)]` below). Every returned byte offset lands on
+// a UTF-8 char boundary, so `replace_text_in_range`'s slicing never panics on
+// emoji / IME input.
+
+// Convert a UTF-16 offset to a UTF-8 byte offset within `content`.
+fn offset_from_utf16(content: &str, offset: usize) -> usize {
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+    for ch in content.chars() {
+        if utf16_count >= offset {
+            break;
+        }
+        utf16_count += ch.len_utf16();
+        utf8_offset += ch.len_utf8();
+    }
+    utf8_offset
+}
+
+// Convert a UTF-8 byte offset to a UTF-16 offset within `content`.
+fn offset_to_utf16(content: &str, offset: usize) -> usize {
+    let mut utf16_offset = 0;
+    let mut utf8_count = 0;
+    for ch in content.chars() {
+        if utf8_count >= offset {
+            break;
+        }
+        utf8_count += ch.len_utf8();
+        utf16_offset += ch.len_utf16();
+    }
+    utf16_offset
+}
+
+// Find the previous grapheme boundary before a byte offset within `content`.
+fn previous_boundary(content: &str, offset: usize) -> usize {
+    content
+        .grapheme_indices(true)
+        .rev()
+        .find_map(|(index, _)| (index < offset).then_some(index))
+        .unwrap_or(0)
+}
+
+// Find the next grapheme boundary after a byte offset within `content`.
+fn next_boundary(content: &str, offset: usize) -> usize {
+    content
+        .grapheme_indices(true)
+        .find_map(|(index, _)| (index > offset).then_some(index))
+        .unwrap_or(content.len())
+}
+
+// Compute the new `(selected_range, selection_reversed)` after extending a
+// selection to `offset`. Extending past the anchor flips the reversal flag and
+// re-normalizes the range so `start <= end`.
+fn selection_after_select_to(
+    selected_range: Range<usize>,
+    selection_reversed: bool,
+    offset: usize,
+) -> (Range<usize>, bool) {
+    let mut range = selected_range;
+    let mut reversed = selection_reversed;
+    if reversed {
+        range.start = offset;
+    } else {
+        range.end = offset;
+    }
+    if range.end < range.start {
+        reversed = !reversed;
+        range = range.end..range.start;
+    }
+    (range, reversed)
 }
 
 impl EntityInputHandler for TextField {
@@ -480,9 +524,9 @@ impl Element for TextFieldElement {
         };
         let palette = theme::palette();
         let text_color = if input.content.is_empty() {
-            rgb(palette.text_dim)
+            rgba(palette.text_dim)
         } else {
-            rgb(palette.text_primary)
+            rgba(palette.input_text)
         };
 
         let run = TextRun {
@@ -533,7 +577,7 @@ impl Element for TextFieldElement {
                         point(bounds.left() + cursor_x, bounds.top() + px(1.0)),
                         size(px(2.0), bounds.bottom() - bounds.top() - px(2.0)),
                     ),
-                    rgb(palette.match_highlight),
+                    rgba(palette.cursor),
                 )),
             )
         } else {
@@ -549,7 +593,7 @@ impl Element for TextFieldElement {
                             bounds.bottom(),
                         ),
                     ),
-                    rgba((palette.selected_row << 8) | 0x44),
+                    rgba(theme::with_alpha(palette.selected_row, 0x44)),
                 )),
                 None,
             )
@@ -584,9 +628,22 @@ impl Element for TextFieldElement {
             window.paint_quad(selection);
         }
 
+        // gpui's element contract guarantees paint follows prepaint, so `line` is
+        // always populated here.
         let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
-            .unwrap();
+        // `ShapedLine::paint` is fallible (e.g. glyph rasterization / atlas errors on
+        // unusual glyphs). The field repaints every frame while focused, so log and
+        // continue instead of panicking the whole picker on a transient failure.
+        if let Err(err) = line.paint(
+            bounds.origin,
+            window.line_height(),
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        ) {
+            warn!(error = %err, "failed to paint text field line");
+        }
 
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
@@ -625,15 +682,14 @@ impl Render for TextField {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .w_full()
-            .h(px(36.0))
-            .px(px(10.0))
+            // Plain Zed-style input: no box/border/rounding. The picker's 36px
+            // search row already supplies height and horizontal padding. Fill
+            // the row height (`h_full`) so the whole row is clickable, and
+            // center the ~18px text element within it (`flex().items_center()`)
+            // so the text still sits vertically centered exactly as before.
+            .h_full()
             .flex()
             .items_center()
-            .bg(rgb(theme::palette().bg))
-            .border_1()
-            .border_color(rgb(theme::palette().border))
-            .rounded(px(6.0))
             .line_height(px(theme.buffer_font_size * 1.2))
             .text_size(px(theme.buffer_font_size))
             .child(TextFieldElement { input: cx.entity() })
@@ -644,5 +700,111 @@ impl Focusable for TextField {
     // Return the focus handle for this text field.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        next_boundary, offset_from_utf16, offset_to_utf16, previous_boundary,
+        selection_after_select_to,
+    };
+
+    // Grapheme stepping over ASCII: every step advances/retreats one byte.
+    #[test]
+    fn boundaries_step_ascii_one_byte_at_a_time() {
+        let s = "abc";
+        assert_eq!(next_boundary(s, 0), 1);
+        assert_eq!(next_boundary(s, 1), 2);
+        // Past the last boundary clamps to the content length.
+        assert_eq!(next_boundary(s, 2), 3);
+        assert_eq!(next_boundary(s, 3), 3);
+
+        assert_eq!(previous_boundary(s, 3), 2);
+        assert_eq!(previous_boundary(s, 1), 0);
+        // Before the first boundary clamps to 0.
+        assert_eq!(previous_boundary(s, 0), 0);
+    }
+
+    // Grapheme stepping over a multibyte char steps the whole char, landing on
+    // char boundaries so downstream slicing can never panic.
+    #[test]
+    fn boundaries_step_over_multibyte_chars() {
+        let s = "café"; // 'é' occupies bytes 3..5
+        assert_eq!(next_boundary(s, 2), 3);
+        assert_eq!(next_boundary(s, 3), 5);
+        assert_eq!(previous_boundary(s, 5), 3);
+        assert!(s.is_char_boundary(next_boundary(s, 3)));
+        assert!(s.is_char_boundary(previous_boundary(s, 5)));
+    }
+
+    // A ZWJ emoji sequence is a single grapheme cluster: one step crosses the
+    // whole cluster, never splitting it into an invalid byte offset.
+    #[test]
+    fn boundaries_treat_zwj_emoji_as_one_cluster() {
+        // Man + ZWJ + Woman + ZWJ + Girl: 18 bytes, one grapheme cluster.
+        let s = "👨‍👩‍👧";
+        assert_eq!(s.len(), 18);
+        assert_eq!(next_boundary(s, 0), 18);
+        assert_eq!(previous_boundary(s, 18), 0);
+        // A simple emoji then ASCII: stepping crosses the 4-byte emoji as a unit.
+        let s = "👍a";
+        assert_eq!(next_boundary(s, 0), 4);
+        assert_eq!(next_boundary(s, 4), 5);
+        assert_eq!(previous_boundary(s, 5), 4);
+        assert_eq!(previous_boundary(s, 4), 0);
+    }
+
+    // UTF-16 <-> UTF-8 offsets round-trip on multibyte content (BMP + astral).
+    #[test]
+    fn utf16_utf8_offsets_round_trip() {
+        // "a" (1 byte / 1 u16), "é" (2 bytes / 1 u16), "👍" (4 bytes / 2 u16).
+        let s = "aé👍";
+        // Byte offsets at each char boundary.
+        for &byte_off in &[0usize, 1, 3, 7] {
+            let utf16 = offset_to_utf16(s, byte_off);
+            assert_eq!(
+                offset_from_utf16(s, utf16),
+                byte_off,
+                "round trip failed at byte {byte_off}"
+            );
+        }
+        // Known-value spot checks.
+        assert_eq!(offset_to_utf16(s, 0), 0);
+        assert_eq!(offset_to_utf16(s, 1), 1); // after 'a'
+        assert_eq!(offset_to_utf16(s, 3), 2); // after 'é'
+        assert_eq!(offset_to_utf16(s, 7), 4); // after '👍' (surrogate pair)
+        assert_eq!(offset_from_utf16(s, 4), 7);
+    }
+
+    // select_to without crossing the anchor extends in place, no reversal.
+    #[test]
+    fn select_to_extends_forward_without_reversing() {
+        let (range, reversed) = selection_after_select_to(2..2, false, 5);
+        assert_eq!(range, 2..5);
+        assert!(!reversed);
+    }
+
+    // Extending a forward selection back past its anchor flips it to reversed
+    // and re-normalizes so start <= end.
+    #[test]
+    fn select_to_past_anchor_flips_to_reversed() {
+        let (range, reversed) = selection_after_select_to(3..6, false, 1);
+        assert_eq!(range, 1..3);
+        assert!(reversed);
+    }
+
+    // A reversed selection moves its start; pulling it back past the anchor
+    // flips it forward again.
+    #[test]
+    fn select_to_reversed_selection_moves_start_and_can_flip_back() {
+        // Reversed 2..6 (anchor at end=6), extend start left to 1.
+        let (range, reversed) = selection_after_select_to(2..6, true, 1);
+        assert_eq!(range, 1..6);
+        assert!(reversed);
+        // Reversed 2..6, drag start right past the anchor (to 9) → flips forward.
+        let (range, reversed) = selection_after_select_to(2..6, true, 9);
+        assert_eq!(range, 6..9);
+        assert!(!reversed);
     }
 }

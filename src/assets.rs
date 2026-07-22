@@ -11,6 +11,7 @@ use rust_embed::RustEmbed;
 #[derive(RustEmbed)]
 #[folder = "vendor/zed"]
 #[include = "file_icons/**/*"]
+#[include = "icons/**/*"]
 pub struct Assets;
 
 #[derive(RustEmbed)]
@@ -124,5 +125,80 @@ impl FontAssets {
         }
 
         cx.text_system().add_fonts(embedded_fonts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_icons_all_exist() {
+        for icon in [
+            "icons/chevron_down.svg",
+            "icons/chevron_right.svg",
+            "icons/check.svg",
+            "icons/file_multiple.svg",
+        ] {
+            assert!(Assets::get(icon).is_some(), "missing embedded icon: {icon}");
+        }
+    }
+
+    #[test]
+    fn missing_icon_is_none() {
+        assert!(Assets::get("icons/nonexistent.svg").is_none());
+    }
+
+    // `list` reports the immediate child entry names under a prefix (one level
+    // deep), deduped and sorted; it merges embedded and externally registered
+    // assets. These exercise the prefix normalization and hierarchy folding.
+
+    #[test]
+    fn list_empty_prefix_returns_top_level_dirs() {
+        let entries = Assets.list("").unwrap();
+        // The embedded folders are `file_icons` and `icons` (see the RustEmbed
+        // include globs). Only the first path segment is surfaced.
+        assert!(entries.iter().any(|e| e.as_ref() == "icons"));
+        assert!(entries.iter().any(|e| e.as_ref() == "file_icons"));
+        // Nested paths collapse to their first segment — no slashes leak out.
+        assert!(entries.iter().all(|e| !e.contains('/')));
+    }
+
+    #[test]
+    fn list_normalizes_missing_trailing_slash() {
+        // A prefix without a trailing slash resolves the same as one with it.
+        let without = Assets.list("icons").unwrap();
+        let with = Assets.list("icons/").unwrap();
+        assert_eq!(without, with);
+        assert!(without.iter().any(|e| e.as_ref() == "check.svg"));
+    }
+
+    #[test]
+    fn list_is_sorted_and_deduped() {
+        let entries = Assets.list("icons/").unwrap();
+        let mut sorted = entries.clone();
+        sorted.sort();
+        assert_eq!(entries, sorted, "entries come back sorted");
+        let mut unique = entries.clone();
+        unique.dedup();
+        assert_eq!(entries, unique, "entries come back deduped");
+    }
+
+    #[test]
+    fn list_merges_external_assets() {
+        // Registering an external asset under a fresh prefix makes it visible to
+        // `list` alongside the embedded entries.
+        register_external_asset(
+            "listtest/generated.svg",
+            PathBuf::from("/tmp/does-not-need-to-exist.svg"),
+        );
+        let entries = Assets.list("listtest/").unwrap();
+        assert!(entries.iter().any(|e| e.as_ref() == "generated.svg"));
+    }
+
+    #[test]
+    fn list_unknown_prefix_is_empty() {
+        let entries = Assets.list("no_such_prefix/").unwrap();
+        assert!(entries.is_empty());
     }
 }

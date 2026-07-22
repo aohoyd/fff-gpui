@@ -4,14 +4,17 @@ mod assets;
 mod config;
 mod editor;
 mod hotkey;
+mod layout;
 mod log;
 mod menubar;
 mod path_shortening;
 mod picker;
 mod preview;
+mod rows;
 mod service;
 mod text_field;
 mod theme;
+mod ui;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,11 +28,11 @@ use gpui::*;
 use indoc::indoc;
 use tracing::{debug, info};
 
-use config::AppConfig;
+use config::{AppConfig, home_dir};
 use picker::{
     CyclePreviousQuery, FffPicker, OpenSelected, PickerSharedState, PreviewScrollDown,
-    PreviewScrollUp, Quit, SelectNext, SelectPrev, ShiftTab, SwitchFiles, SwitchGrep,
-    ToggleSelectAll, ToggleSelected,
+    PreviewScrollUp, Quit, SelectNext, SelectPrev, ShiftTab, SwitchFiles, SwitchGrep, ToggleFold,
+    ToggleFoldAll, ToggleMultiSelectMode, ToggleSelectAll, ToggleSelected,
 };
 use service::{
     CommandEnvelope, ForwardOutcome, ServiceCommand, forward_to_running_instance, start_listener,
@@ -116,14 +119,6 @@ impl PickerSession {
             responder: None,
         }
     }
-}
-
-// Resolve the user's home directory on Unix.
-#[cfg(unix)]
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn normalize_dir(path: PathBuf) -> Option<PathBuf> {
@@ -277,6 +272,9 @@ fn bind_base_keys(cx: &mut App) {
         KeyBinding::new("down", SelectNext, None),
         KeyBinding::new("tab", ToggleSelected, None),
         KeyBinding::new("ctrl-a", ToggleSelectAll, None),
+        KeyBinding::new("cmd-shift-s", ToggleMultiSelectMode, None),
+        KeyBinding::new("alt-z", ToggleFold, None),
+        KeyBinding::new("alt-shift-z", ToggleFoldAll, None),
         KeyBinding::new("shift-tab", ShiftTab, None),
         KeyBinding::new("ctrl-up", CyclePreviousQuery, None),
         KeyBinding::new("ctrl-u", PreviewScrollUp, None),
@@ -477,22 +475,22 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
     let print_stdout = session.print_stdout;
     let responder = session.responder;
     let editor = config.editor.clone();
-    let window_width = config.window_width;
-    let window_height = config.window_height;
-    let bounds = active_display_bounds()
+    // Viewport-relative sizing: default 60%x60% of the active display, honoring
+    // the optional px overrides. The math lives in `layout::modal_size`.
+    let display = active_display_bounds()
         .or_else(|| cx.primary_display().map(|d| d.bounds()))
         .map(|db| {
-            let x = db.origin.x + (db.size.width - px(window_width)) / 2.0;
-            let y = db.origin.y + (db.size.height - px(window_height)) / 3.0;
-            Bounds {
-                origin: point(x, y),
-                size: size(px(window_width), px(window_height)),
-            }
-        })
-        .unwrap_or(Bounds {
-            origin: point(px(400.0), px(200.0)),
-            size: size(px(window_width), px(window_height)),
+            (
+                (f32::from(db.origin.x), f32::from(db.origin.y)),
+                (f32::from(db.size.width), f32::from(db.size.height)),
+            )
         });
+    let ((origin_x, origin_y), (modal_w, modal_h)) =
+        layout::window_bounds(display, config.window_width, config.window_height);
+    let bounds = Bounds {
+        origin: point(px(origin_x), px(origin_y)),
+        size: size(px(modal_w), px(modal_h)),
+    };
 
     cx.open_window(
         WindowOptions {
@@ -521,7 +519,7 @@ fn open_window(session: PickerSession, runtime_config: &Arc<Mutex<RuntimeConfig>
                 picker.install_focus_lost_dismiss(window, cx);
             });
             let focus = view.read(cx).text_field_focus_handle(cx);
-            window.focus(&focus);
+            window.focus(&focus, cx);
             view
         },
     )
@@ -805,7 +803,7 @@ fn main() {
         info!("running one-shot picker");
     }
 
-    let app = Application::new().with_assets(Assets);
+    let app = gpui_platform::application().with_assets(Assets);
 
     app.run(move |cx: &mut App| {
         FontAssets::load_fonts(cx).expect("failed to load bundled fonts");
@@ -855,7 +853,7 @@ fn main() {
                 &runtime_config,
                 cx,
             );
-            cx.on_window_closed(|cx| cx.quit()).detach();
+            cx.on_window_closed(|cx, _window_id| cx.quit()).detach();
         } else if launch.print_stdout {
             open_window(
                 one_shot_session(
@@ -868,7 +866,7 @@ fn main() {
                 &runtime_config,
                 cx,
             );
-            cx.on_window_closed(|cx| cx.quit()).detach();
+            cx.on_window_closed(|cx, _window_id| cx.quit()).detach();
         } else {
             info!("launching without initial picker window");
         }

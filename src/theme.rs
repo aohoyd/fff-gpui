@@ -13,18 +13,134 @@ use serde_json::Value;
 use tracing::{debug, warn};
 
 use crate::assets::register_external_asset_path;
-use crate::config::{AppConfig, DEFAULT_PICKER_PANE_WIDTH};
+use crate::config::{AppConfig, ThemeConfig, home_dir};
 
-const DEFAULT_BG: u32 = 0x1C1C1E;
-const DEFAULT_BORDER: u32 = 0x2F2F31;
-const DEFAULT_SELECTED_ROW: u32 = 0x2C3F59;
-const DEFAULT_HOVER_ROW: u32 = 0x2A2A2C;
-const DEFAULT_TEXT_PRIMARY: u32 = 0xFFFFFF;
-const DEFAULT_TEXT_SECONDARY: u32 = 0x8E8E93;
-const DEFAULT_TEXT_DIM: u32 = 0x6C6C70;
-const DEFAULT_STATUS_BAR_BG: u32 = 0x18181A;
-const DEFAULT_MATCH_HIGHLIGHT: u32 = 0x4A9EFF;
-const DEFAULT_PREVIEW_BG: u32 = 0x161618;
+// All colors are stored as 0xRRGGBBAA and painted via `rgba(...)`.
+//
+// Zed-parity resolution: every palette token resolves from its OWN theme key,
+// else the per-appearance STATIC default below — never from another key's
+// resolved value. Zed merges missing theme keys from the static
+// `ThemeColors::dark()`/`light()` tables via `Refineable` with no inter-key
+// inheritance, so a theme that flattens `editor.background` but never authors
+// `elevated_surface.background` still renders a two-tone picker there. The
+// tables are ported from the Zed checkout's
+// `crates/theme/src/default_colors.rs`; the color scales live in the same file
+// (`neutral()` = sand, and `step_N()` is one-based: step_2 = array index 1).
+
+/// Which half of Zed's static default table a theme resolves against. Theme
+/// JSON variants carry `"appearance": "dark" | "light"`; absent or
+/// unrecognized values fall back to `Dark`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Appearance {
+    Dark,
+    Light,
+}
+
+fn appearance_from_json(value: Option<&str>) -> Appearance {
+    match value {
+        Some(value) if value.eq_ignore_ascii_case("light") => Appearance::Light,
+        _ => Appearance::Dark,
+    }
+}
+
+/// Zed's static per-appearance defaults for every theme key fff consumes,
+/// with resolved RGBA hexes extracted from `ThemeColors::dark()`/`light()` in
+/// zed `crates/theme/src/default_colors.rs` (line references below). Values
+/// from the `dark_alpha()`/`light_alpha()` scales genuinely carry alpha and
+/// blend live at paint time.
+struct ZedDefaults {
+    elevated_surface_background: u32,
+    editor_background: u32,
+    editor_gutter_background: u32,
+    border: u32,
+    border_variant: u32,
+    ghost_element_selected: u32,
+    ghost_element_hover: u32,
+    text: u32,
+    text_muted: u32,
+    text_placeholder: u32,
+    text_accent: u32,
+    icon_muted: u32,
+    search_match_background: u32,
+    editor_active_line_background: u32,
+    editor_line_number: u32,
+    editor_active_line_number: u32,
+    editor_foreground: u32,
+    version_control_added: u32,
+    version_control_modified: u32,
+    version_control_deleted: u32,
+    version_control_renamed: u32,
+    version_control_conflict: u32,
+    version_control_ignored: u32,
+}
+
+// `ThemeColors::dark()` (default_colors.rs:202-330), resolved through the
+// sand/blue/orange/gray scales defined in the same file.
+const ZED_DARK_DEFAULTS: ZedDefaults = ZedDefaults {
+    elevated_surface_background: 0x191918FF, // L212 neutral().dark().step_2()
+    editor_background: 0x111110FF,           // L268 neutral().dark().step_1()
+    editor_gutter_background: 0x111110FF,    // L269 neutral().dark().step_1()
+    border: 0x3B3A37FF,                      // L206 neutral().dark().step_6()
+    border_variant: 0x31312EFF,              // L207 neutral().dark().step_5()
+    ghost_element_selected: 0xFBFBEB23,      // L226 neutral().dark_alpha().step_5()
+    ghost_element_hover: 0xFEFEF31B,         // L224 neutral().dark_alpha().step_4()
+    text: 0xEEEEECFF,                        // L228 neutral().dark().step_12()
+    text_muted: 0xB5B3ADFF,                  // L229 neutral().dark().step_11()
+    text_placeholder: 0x7C7B74FF,            // L230 neutral().dark().step_10()
+    text_accent: 0x70B8FFFF,                 // L232 blue().dark().step_11()
+    icon_muted: 0x7C7B74FF,                  // L234 neutral().dark().step_10()
+    search_match_background: 0x31312EFF,     // L246 neutral().dark().step_5()
+    editor_active_line_background: 0xF6F6F513, // L271 neutral().dark_alpha().step_3()
+    editor_line_number: 0xFFFDEE73,          // L274 neutral().dark_alpha().step_10()
+    editor_active_line_number: 0xFFFCF4B0,   // L276 neutral().dark_alpha().step_11()
+    editor_foreground: 0xEEEEECFF,           // L267 neutral().dark().step_12()
+    version_control_added: 0x2E9E48FF,       // L321 ADDED_COLOR hsla(134°,.55,.40)
+    version_control_modified: 0xD3AF1DFF,    // L323 MODIFIED_COLOR hsla(48°,.76,.47)
+    version_control_deleted: 0x78081AFF,     // L322 REMOVED_COLOR hsla(350°,.88,.25)
+    version_control_renamed: 0xD3AF1DFF,     // L324 MODIFIED_COLOR
+    version_control_conflict: 0xFFE0C2FF,    // L325 orange().dark().step_12()
+    version_control_ignored: 0xEEEEEEFF,     // L326 gray().dark().step_12()
+};
+
+// `ThemeColors::light()` (default_colors.rs:49-177). Note the light table uses
+// the PLAIN neutral scale for line numbers (opaque), unlike the dark table.
+const ZED_LIGHT_DEFAULTS: ZedDefaults = ZedDefaults {
+    elevated_surface_background: 0xF9F9F8FF, // L59 neutral().light().step_2()
+    editor_background: 0xFDFDFCFF,           // L115 neutral().light().step_1()
+    editor_gutter_background: 0xFDFDFCFF,    // L116 neutral().light().step_1()
+    border: 0xDAD9D6FF,                      // L53 neutral().light().step_6()
+    border_variant: 0xE2E1DEFF,              // L54 neutral().light().step_5()
+    ghost_element_selected: 0x1F180021,      // L73 neutral().light_alpha().step_5()
+    ghost_element_hover: 0x20100010,         // L71 neutral().light_alpha().step_3()
+    text: 0x21201CFF,                        // L75 neutral().light().step_12()
+    text_muted: 0x82827CFF,                  // L76 neutral().light().step_10()
+    text_placeholder: 0x82827CFF,            // L77 neutral().light().step_10()
+    text_accent: 0x0D74CEFF,                 // L79 blue().light().step_11()
+    icon_muted: 0x82827CFF,                  // L81 neutral().light().step_10()
+    search_match_background: 0xE2E1DEFF,     // L93 neutral().light().step_5()
+    editor_active_line_background: 0x20100010, // L118 neutral().light_alpha().step_3()
+    editor_line_number: 0x82827CFF,          // L121 neutral().light().step_10()
+    editor_active_line_number: 0x63635EFF,   // L123 neutral().light().step_11()
+    editor_foreground: 0x21201CFF,           // L114 neutral().light().step_12()
+    version_control_added: 0x2E9E48FF,       // L168 ADDED_COLOR hsla(134°,.55,.40)
+    version_control_modified: 0xD3AF1DFF,    // L170 MODIFIED_COLOR hsla(48°,.76,.47)
+    version_control_deleted: 0x78081AFF,     // L169 REMOVED_COLOR hsla(350°,.88,.25)
+    version_control_renamed: 0xD3AF1DFF,     // L171 MODIFIED_COLOR
+    version_control_conflict: 0x582D1DFF,    // L172 orange().light().step_12()
+    version_control_ignored: 0x202020FF,     // L173 gray().light().step_12()
+};
+
+const fn zed_defaults(appearance: Appearance) -> &'static ZedDefaults {
+    match appearance {
+        Appearance::Dark => &ZED_DARK_DEFAULTS,
+        Appearance::Light => &ZED_LIGHT_DEFAULTS,
+    }
+}
+
+// Untracked has NO Zed default (Zed's `version_control_*` table lacks it, and
+// its status color remaps untracked to created, which would lose the distinct
+// purple). fff keeps its own appearance-independent hex.
+const DEFAULT_GIT_UNTRACKED: u32 = 0xA48EFFFF;
 const DEFAULT_UI_FONT_FAMILY: &str = ".SystemUIFont";
 const DEFAULT_BUFFER_FONT_FAMILY: &str = "UbuntuMono Nerd Font";
 pub const DEFAULT_UI_FONT_SIZE: f32 = 16.0;
@@ -33,52 +149,99 @@ static ACTIVE_THEME: OnceLock<RwLock<AppTheme>> = OnceLock::new();
 static ACTIVE_FILE_ICON_THEME: OnceLock<RwLock<FileIconTheme>> = OnceLock::new();
 static THEME_VERSION: AtomicU64 = AtomicU64::new(1);
 
+/// Replace the alpha byte of an `0xRRGGBBAA` color with `alpha`, keeping the RGB
+/// bytes. Masks the old alpha off rather than shifting: the pre-RGBA `<< 8` form
+/// silently corrupted colors once the palette started carrying a real alpha byte
+/// (a nonzero top byte would leak into RGB). Blended live at paint time.
+pub const fn with_alpha(base: u32, alpha: u8) -> u32 {
+    (base & 0xFFFF_FF00) | alpha as u32
+}
+
+/// Force `0xRRGGBBAA` fully opaque. The full-bleed surface tokens (`bg`,
+/// `preview_bg`, `editor_gutter_bg`) paint edge-to-edge over the opaque OS
+/// window; a translucent authored value (config override or third-party Zed
+/// theme) would render the picker partially see-through — visibly broken
+/// against the design's opaque edge-to-edge window. Clamp their alpha byte at
+/// resolution time so only the blend-at-paint tokens stay translucent.
+const fn opaque(value: u32) -> u32 {
+    with_alpha(value, 0xFF)
+}
+
+/// Adding a color token means touching NINE synchronized places. A `pub` field
+/// going unused never trips `dead_code`, so nothing here fails at compile time —
+/// the `palette_round_trips_every_color_field` test is the field-swap safety net:
+///   1. `Palette` field (below)         2. `AppTheme` field
+///   3. `impl Default for Palette`       4. `impl Default for AppTheme`
+///   5. `palette_from_theme` getter      6. `apply_palette`
+///   7. `palette_from_style`             8. `apply_color` line in `apply_theme_config_colors`
+///   9. `ThemeConfig` in `config.rs`
 #[derive(Debug, Clone, PartialEq)]
 pub struct Palette {
     pub bg: u32,
     pub border: u32,
+    pub border_variant: u32,
     pub selected_row: u32,
     pub hover_row: u32,
     pub text_primary: u32,
     pub text_secondary: u32,
     pub text_dim: u32,
-    pub status_bar_bg: u32,
+    pub text_accent: u32,
     pub match_highlight: u32,
     pub match_highlight_bg: u32,
     pub preview_bg: u32,
-    pub input_bg: u32,
+    pub editor_gutter_bg: u32,
+    pub editor_line_number: u32,
+    pub editor_active_line_number: u32,
     pub input_text: u32,
     pub cursor: u32,
-    pub cursor_selection: u32,
     pub icon_muted: u32,
-    pub icon_accent: u32,
-    pub picker_pane_width: f32,
+    pub active_line_bg: u32,
+    pub git_created: u32,
+    pub git_modified: u32,
+    pub git_deleted: u32,
+    pub git_conflict: u32,
+    pub git_renamed: u32,
+    pub git_untracked: u32,
+    pub git_ignored: u32,
+    pub picker_pane_width: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppTheme {
     pub bg: u32,
     pub border: u32,
+    pub border_variant: u32,
     pub selected_row: u32,
     pub hover_row: u32,
     pub text_primary: u32,
     pub text_secondary: u32,
     pub text_dim: u32,
-    pub status_bar_bg: u32,
+    pub text_accent: u32,
     pub match_highlight: u32,
     pub match_highlight_bg: u32,
     pub preview_bg: u32,
-    pub input_bg: u32,
+    pub editor_gutter_bg: u32,
+    pub editor_line_number: u32,
+    pub editor_active_line_number: u32,
     pub input_text: u32,
     pub cursor: u32,
-    pub cursor_selection: u32,
     pub icon_muted: u32,
-    pub icon_accent: u32,
+    // Populated by the theme pipeline and consumed by the picker: `active_line_bg`
+    // by the preview active-line highlight, the `git_*` tokens by the per-row git
+    // status edge bars.
+    pub active_line_bg: u32,
+    pub git_created: u32,
+    pub git_modified: u32,
+    pub git_deleted: u32,
+    pub git_conflict: u32,
+    pub git_renamed: u32,
+    pub git_untracked: u32,
+    pub git_ignored: u32,
     pub ui_font_family: Option<String>,
     pub buffer_font_family: Option<String>,
     pub ui_font_size: f32,
     pub buffer_font_size: f32,
-    pub picker_pane_width: f32,
+    pub picker_pane_width: Option<f32>,
     pub syntax_styles: Vec<(String, SyntaxStyle)>,
     pub syntax_default_color: u32,
 }
@@ -86,6 +249,7 @@ pub struct AppTheme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SyntaxRenderStyle {
     pub color: u32,
+    pub bg: Option<u32>,
     pub italic: bool,
     pub bold: bool,
     pub underline: bool,
@@ -93,57 +257,89 @@ pub struct SyntaxRenderStyle {
 }
 
 impl Default for Palette {
+    // When no theme applies at all, the palette IS Zed's dark default table —
+    // exactly what `palette_from_style` resolves for an empty style (the
+    // `default_palette_is_the_zed_dark_table` test pins that equivalence).
     fn default() -> Self {
+        let d = &ZED_DARK_DEFAULTS;
         Self {
-            bg: DEFAULT_BG,
-            border: DEFAULT_BORDER,
-            selected_row: DEFAULT_SELECTED_ROW,
-            hover_row: DEFAULT_HOVER_ROW,
-            text_primary: DEFAULT_TEXT_PRIMARY,
-            text_secondary: DEFAULT_TEXT_SECONDARY,
-            text_dim: DEFAULT_TEXT_DIM,
-            status_bar_bg: DEFAULT_STATUS_BAR_BG,
-            match_highlight: DEFAULT_MATCH_HIGHLIGHT,
-            match_highlight_bg: 0x2C4870,
-            preview_bg: DEFAULT_PREVIEW_BG,
-            input_bg: 0x232326,
-            input_text: 0xE5E5EA,
-            cursor: 0x0A84FF,
-            cursor_selection: 0x0A84FF44,
-            icon_muted: DEFAULT_TEXT_SECONDARY,
-            icon_accent: DEFAULT_MATCH_HIGHLIGHT,
-            picker_pane_width: DEFAULT_PICKER_PANE_WIDTH,
+            bg: d.elevated_surface_background,
+            border: d.border,
+            border_variant: d.border_variant,
+            selected_row: d.ghost_element_selected,
+            hover_row: d.ghost_element_hover,
+            text_primary: d.text,
+            text_secondary: d.text_muted,
+            text_dim: d.text_placeholder,
+            text_accent: d.text_accent,
+            // `match_highlight` follows `text.accent` by design.
+            match_highlight: d.text_accent,
+            match_highlight_bg: d.search_match_background,
+            preview_bg: d.editor_background,
+            editor_gutter_bg: d.editor_gutter_background,
+            editor_line_number: d.editor_line_number,
+            editor_active_line_number: d.editor_active_line_number,
+            // Fallback tracks `text_primary`: typed input text renders with
+            // `input_text` (text_field.rs), so this keeps default rendering
+            // identical to the pre-wiring `text_primary` path.
+            input_text: d.text,
+            cursor: d.text_accent,
+            icon_muted: d.icon_muted,
+            active_line_bg: d.editor_active_line_background,
+            git_created: d.version_control_added,
+            git_modified: d.version_control_modified,
+            git_deleted: d.version_control_deleted,
+            git_conflict: d.version_control_conflict,
+            git_renamed: d.version_control_renamed,
+            git_untracked: DEFAULT_GIT_UNTRACKED,
+            git_ignored: d.version_control_ignored,
+            picker_pane_width: None,
         }
     }
 }
 
 impl Default for AppTheme {
+    // Color tokens mirror `Palette::default()` (Zed's dark default table).
     fn default() -> Self {
+        let d = &ZED_DARK_DEFAULTS;
         Self {
-            bg: DEFAULT_BG,
-            border: DEFAULT_BORDER,
-            selected_row: DEFAULT_SELECTED_ROW,
-            hover_row: DEFAULT_HOVER_ROW,
-            text_primary: DEFAULT_TEXT_PRIMARY,
-            text_secondary: DEFAULT_TEXT_SECONDARY,
-            text_dim: DEFAULT_TEXT_DIM,
-            status_bar_bg: DEFAULT_STATUS_BAR_BG,
-            match_highlight: DEFAULT_MATCH_HIGHLIGHT,
-            match_highlight_bg: 0x2C4870,
-            preview_bg: DEFAULT_PREVIEW_BG,
-            input_bg: 0x232326,
-            input_text: 0xE5E5EA,
-            cursor: 0x0A84FF,
-            cursor_selection: 0x0A84FF44,
-            icon_muted: DEFAULT_TEXT_SECONDARY,
-            icon_accent: DEFAULT_MATCH_HIGHLIGHT,
+            bg: d.elevated_surface_background,
+            border: d.border,
+            border_variant: d.border_variant,
+            selected_row: d.ghost_element_selected,
+            hover_row: d.ghost_element_hover,
+            text_primary: d.text,
+            text_secondary: d.text_muted,
+            text_dim: d.text_placeholder,
+            text_accent: d.text_accent,
+            // `match_highlight` follows `text.accent` by design.
+            match_highlight: d.text_accent,
+            match_highlight_bg: d.search_match_background,
+            preview_bg: d.editor_background,
+            editor_gutter_bg: d.editor_gutter_background,
+            editor_line_number: d.editor_line_number,
+            editor_active_line_number: d.editor_active_line_number,
+            // Fallback tracks `text_primary`: typed input text renders with
+            // `input_text` (text_field.rs), so this keeps default rendering
+            // identical to the pre-wiring `text_primary` path.
+            input_text: d.text,
+            cursor: d.text_accent,
+            icon_muted: d.icon_muted,
+            active_line_bg: d.editor_active_line_background,
+            git_created: d.version_control_added,
+            git_modified: d.version_control_modified,
+            git_deleted: d.version_control_deleted,
+            git_conflict: d.version_control_conflict,
+            git_renamed: d.version_control_renamed,
+            git_untracked: DEFAULT_GIT_UNTRACKED,
+            git_ignored: d.version_control_ignored,
             ui_font_family: Some(DEFAULT_UI_FONT_FAMILY.to_string()),
             buffer_font_family: Some(DEFAULT_BUFFER_FONT_FAMILY.to_string()),
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             buffer_font_size: DEFAULT_BUFFER_FONT_SIZE,
-            picker_pane_width: DEFAULT_PICKER_PANE_WIDTH,
+            picker_pane_width: None,
             syntax_styles: Vec::new(),
-            syntax_default_color: DEFAULT_TEXT_PRIMARY,
+            syntax_default_color: d.editor_foreground,
         }
     }
 }
@@ -184,6 +380,7 @@ impl AppTheme {
         let style = syntax_style_for_capture(&self.syntax_styles, resolved_name);
         SyntaxRenderStyle {
             color: syntax_style_color(&style).unwrap_or(self.syntax_default_color),
+            bg: syntax_style_bg(&style),
             italic: matches!(style.font_style.as_deref(), Some("italic")),
             bold: matches!(style.font_style.as_deref(), Some("bold"))
                 || style.font_weight.is_some_and(|w| w >= 600.0),
@@ -263,6 +460,11 @@ struct ThemeFamilyFile {
 #[derive(Debug, Clone, Deserialize)]
 struct ThemeVariant {
     name: String,
+    // Parsed leniently as a plain string (not an enum) so an unrecognized
+    // appearance value degrades to Dark instead of failing the whole family
+    // file — see `appearance_from_json`.
+    #[serde(default)]
+    appearance: Option<String>,
     #[serde(default)]
     style: Value,
 }
@@ -672,6 +874,10 @@ pub struct SyntaxStyle {
 #[derive(Debug, Clone)]
 struct ThemeCatalogEntry {
     style: Value,
+    // Which static default table missing keys resolve against — kept on the
+    // entry so the override path re-resolves the merged style with the same
+    // appearance the base variant declared.
+    appearance: Appearance,
     palette: Palette,
     syntax_styles: Vec<(String, SyntaxStyle)>,
     syntax_default_color: u32,
@@ -693,25 +899,39 @@ pub fn current() -> AppTheme {
 }
 
 pub fn palette() -> Palette {
-    let theme = current();
+    palette_from_theme(&current())
+}
+
+// AppTheme -> Palette copy, split out from `palette()` so the 27-field field-swap
+// guard (`palette_round_trips_every_color_field`) can exercise it gpui-free.
+fn palette_from_theme(theme: &AppTheme) -> Palette {
     Palette {
         bg: theme.bg,
         border: theme.border,
+        border_variant: theme.border_variant,
         selected_row: theme.selected_row,
         hover_row: theme.hover_row,
         text_primary: theme.text_primary,
         text_secondary: theme.text_secondary,
         text_dim: theme.text_dim,
-        status_bar_bg: theme.status_bar_bg,
+        text_accent: theme.text_accent,
         match_highlight: theme.match_highlight,
         match_highlight_bg: theme.match_highlight_bg,
         preview_bg: theme.preview_bg,
-        input_bg: theme.input_bg,
+        editor_gutter_bg: theme.editor_gutter_bg,
+        editor_line_number: theme.editor_line_number,
+        editor_active_line_number: theme.editor_active_line_number,
         input_text: theme.input_text,
         cursor: theme.cursor,
-        cursor_selection: theme.cursor_selection,
         icon_muted: theme.icon_muted,
-        icon_accent: theme.icon_accent,
+        active_line_bg: theme.active_line_bg,
+        git_created: theme.git_created,
+        git_modified: theme.git_modified,
+        git_deleted: theme.git_deleted,
+        git_conflict: theme.git_conflict,
+        git_renamed: theme.git_renamed,
+        git_untracked: theme.git_untracked,
+        git_ignored: theme.git_ignored,
         picker_pane_width: theme.picker_pane_width,
     }
 }
@@ -719,7 +939,7 @@ pub fn palette() -> Palette {
 pub fn syntax_color(capture_name: &str) -> u32 {
     match active_theme_lock().read() {
         Ok(theme) => theme.syntax_color(capture_name),
-        Err(_) => DEFAULT_TEXT_PRIMARY,
+        Err(_) => ZED_DARK_DEFAULTS.editor_foreground,
     }
 }
 
@@ -727,7 +947,7 @@ pub fn syntax_render_style(capture_name: &str) -> SyntaxRenderStyle {
     match active_theme_lock().read() {
         Ok(theme) => theme.syntax_render_style(capture_name),
         Err(_) => SyntaxRenderStyle {
-            color: DEFAULT_TEXT_PRIMARY,
+            color: ZED_DARK_DEFAULTS.editor_foreground,
             ..Default::default()
         },
     }
@@ -794,10 +1014,9 @@ pub fn sync_from_config(config: &AppConfig, appearance: WindowAppearance, cx: &m
 
     if let Some(catalog) = theme_catalog.as_ref()
         && let Some(name) = config.theme.name.as_deref()
+        && !name.trim().is_empty()
     {
-        if !name.trim().is_empty() {
-            apply_theme_with_overrides(name, catalog, &overrides, &mut resolved);
-        }
+        apply_theme_with_overrides(name, catalog, &overrides, &mut resolved);
     }
 
     if let Some(family) = resolve_optional_string(
@@ -818,32 +1037,12 @@ pub fn sync_from_config(config: &AppConfig, appearance: WindowAppearance, cx: &m
     if let Some(size) = resolve_optional_font_size(config.font.buffer_size, config.font.size) {
         resolved.buffer_font_size = size;
     }
-    if config.picker_pane_width.is_finite() && config.picker_pane_width > 0.0 {
-        resolved.picker_pane_width = config.picker_pane_width;
-    }
-    apply_color(&config.theme.bg, &mut resolved.bg);
-    apply_color(&config.theme.border, &mut resolved.border);
-    apply_color(&config.theme.selected_row, &mut resolved.selected_row);
-    apply_color(&config.theme.hover_row, &mut resolved.hover_row);
-    apply_color(&config.theme.text_primary, &mut resolved.text_primary);
-    apply_color(&config.theme.text_secondary, &mut resolved.text_secondary);
-    apply_color(&config.theme.text_dim, &mut resolved.text_dim);
-    apply_color(&config.theme.status_bar_bg, &mut resolved.status_bar_bg);
-    apply_color(&config.theme.match_highlight, &mut resolved.match_highlight);
-    apply_color(
-        &config.theme.match_highlight_bg,
-        &mut resolved.match_highlight_bg,
-    );
-    apply_color(&config.theme.preview_bg, &mut resolved.preview_bg);
-    apply_color(&config.theme.input_bg, &mut resolved.input_bg);
-    apply_color(&config.theme.input_text, &mut resolved.input_text);
-    apply_color(&config.theme.cursor, &mut resolved.cursor);
-    apply_color(
-        &config.theme.cursor_selection,
-        &mut resolved.cursor_selection,
-    );
-    apply_color(&config.theme.icon_muted, &mut resolved.icon_muted);
-    apply_color(&config.theme.icon_accent, &mut resolved.icon_accent);
+    // `None` means no px override: the picker resolves the pane width from the
+    // viewport-relative layout math instead.
+    resolved.picker_pane_width = config
+        .picker_pane_width
+        .filter(|width| crate::config::is_valid_dimension(*width));
+    apply_theme_config_colors(&config.theme, &mut resolved);
 
     cx.set_global(resolved.clone());
     if let Ok(mut guard) = active_theme_lock().write() {
@@ -855,6 +1054,49 @@ pub fn sync_from_config(config: &AppConfig, appearance: WindowAppearance, cx: &m
     THEME_VERSION.fetch_add(1, Ordering::SeqCst);
 
     refresh_windows(cx);
+}
+
+// Apply the fff `[theme]` config color overrides onto the Zed-resolved theme —
+// the last precedence step (explicit config wins over Zed sync). Split out of
+// `sync_from_config` so the field-by-field wiring is unit-testable gpui-free: a
+// copy-paste field mismatch (e.g. writing `resolved.border` for the
+// `border_variant` override) fails a table assertion in the tests below. The
+// full-bleed surface tokens (`bg`, `preview_bg`, `editor_gutter_bg`) are
+// re-clamped opaque after their override so a translucent config value can't
+// punch a see-through hole in the edge-to-edge window.
+fn apply_theme_config_colors(config: &ThemeConfig, resolved: &mut AppTheme) {
+    apply_color(&config.bg, &mut resolved.bg);
+    resolved.bg = opaque(resolved.bg);
+    apply_color(&config.border, &mut resolved.border);
+    apply_color(&config.border_variant, &mut resolved.border_variant);
+    apply_color(&config.selected_row, &mut resolved.selected_row);
+    apply_color(&config.hover_row, &mut resolved.hover_row);
+    apply_color(&config.text_primary, &mut resolved.text_primary);
+    apply_color(&config.text_secondary, &mut resolved.text_secondary);
+    apply_color(&config.text_dim, &mut resolved.text_dim);
+    apply_color(&config.text_accent, &mut resolved.text_accent);
+    apply_color(&config.match_highlight, &mut resolved.match_highlight);
+    apply_color(&config.match_highlight_bg, &mut resolved.match_highlight_bg);
+    apply_color(&config.preview_bg, &mut resolved.preview_bg);
+    resolved.preview_bg = opaque(resolved.preview_bg);
+    apply_color(&config.editor_gutter_bg, &mut resolved.editor_gutter_bg);
+    resolved.editor_gutter_bg = opaque(resolved.editor_gutter_bg);
+    apply_color(&config.editor_line_number, &mut resolved.editor_line_number);
+    apply_color(
+        &config.editor_active_line_number,
+        &mut resolved.editor_active_line_number,
+    );
+    apply_color(&config.input_text, &mut resolved.input_text);
+    apply_color(&config.cursor, &mut resolved.cursor);
+    apply_color(&config.icon_muted, &mut resolved.icon_muted);
+    apply_color(&config.active_line_bg, &mut resolved.active_line_bg);
+    apply_color(&config.git_created, &mut resolved.git_created);
+    apply_color(&config.git_modified, &mut resolved.git_modified);
+    apply_color(&config.git_deleted, &mut resolved.git_deleted);
+    apply_color(&config.git_conflict, &mut resolved.git_conflict);
+    apply_color(&config.git_renamed, &mut resolved.git_renamed);
+    apply_color(&config.git_untracked, &mut resolved.git_untracked);
+    apply_color(&config.git_ignored, &mut resolved.git_ignored);
 }
 
 fn refresh_windows(cx: &mut App) {
@@ -888,7 +1130,7 @@ fn zed_icon_themes_dir() -> PathBuf {
 fn zed_installed_themes_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        return home_dir().join("Library/Application Support/Zed/extensions/installed");
+        home_dir().join("Library/Application Support/Zed/extensions/installed")
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -899,12 +1141,6 @@ fn zed_installed_themes_dir() -> PathBuf {
 
         home_dir().join(".local/share/zed/extensions/installed")
     }
-}
-
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn read_to_string(path: &Path) -> Result<String> {
@@ -1168,10 +1404,19 @@ fn extension_or_hidden_file_name(path: &Path) -> Option<String> {
 }
 
 fn load_theme_catalog() -> Result<HashMap<String, ThemeCatalogEntry>> {
-    let mut catalog = HashMap::new();
-    load_builtin_theme_catalog(&mut catalog)?;
+    let mut catalog = builtin_theme_catalog()?;
     load_installed_theme_catalog(&mut catalog)?;
     load_local_theme_catalog(&mut catalog)?;
+    Ok(catalog)
+}
+
+// The vendored theme catalog only — no user/host directories are read, so it is
+// deterministic regardless of the machine's Zed install. Production loading goes
+// through `load_theme_catalog`, which merges the installed/local dirs on top;
+// tests that assert vendored-theme parity use this to avoid host-state flake.
+fn builtin_theme_catalog() -> Result<HashMap<String, ThemeCatalogEntry>> {
+    let mut catalog = HashMap::new();
+    load_builtin_theme_catalog(&mut catalog)?;
     Ok(catalog)
 }
 
@@ -1391,13 +1636,15 @@ fn load_theme_family_contents(
 
     for variant in family.themes {
         let theme_key = normalize_name(&variant.name);
+        let appearance = appearance_from_json(variant.appearance.as_deref());
         let entry = ThemeCatalogEntry {
             style: variant.style.clone(),
-            palette: palette_from_style(&variant.style),
+            appearance,
+            palette: palette_from_style(&variant.style, appearance),
             syntax_styles: syntax_styles_from_style(&variant.style),
             syntax_default_color: color_from_style(&variant.style, "editor.foreground")
                 .or_else(|| color_from_style(&variant.style, "text"))
-                .unwrap_or(DEFAULT_TEXT_PRIMARY),
+                .unwrap_or(zed_defaults(appearance).editor_foreground),
         };
 
         catalog.insert(theme_key, entry);
@@ -1420,7 +1667,7 @@ fn apply_theme_with_overrides(
     if let Some(override_style) = overrides.get(&key) {
         let mut merged = entry.style.clone();
         merge_json(&mut merged, override_style);
-        apply_style_to_theme(&merged, theme);
+        apply_style_to_theme(&merged, entry.appearance, theme);
     } else {
         apply_catalog_entry(entry, theme);
     }
@@ -1439,21 +1686,30 @@ fn apply_palette(palette: &Palette, theme: &mut AppTheme) {
     // clobber the config-resolved value with the palette's default.
     theme.bg = palette.bg;
     theme.border = palette.border;
+    theme.border_variant = palette.border_variant;
     theme.selected_row = palette.selected_row;
     theme.hover_row = palette.hover_row;
     theme.text_primary = palette.text_primary;
     theme.text_secondary = palette.text_secondary;
     theme.text_dim = palette.text_dim;
-    theme.status_bar_bg = palette.status_bar_bg;
+    theme.text_accent = palette.text_accent;
     theme.match_highlight = palette.match_highlight;
     theme.match_highlight_bg = palette.match_highlight_bg;
     theme.preview_bg = palette.preview_bg;
-    theme.input_bg = palette.input_bg;
+    theme.editor_gutter_bg = palette.editor_gutter_bg;
+    theme.editor_line_number = palette.editor_line_number;
+    theme.editor_active_line_number = palette.editor_active_line_number;
     theme.input_text = palette.input_text;
     theme.cursor = palette.cursor;
-    theme.cursor_selection = palette.cursor_selection;
     theme.icon_muted = palette.icon_muted;
-    theme.icon_accent = palette.icon_accent;
+    theme.active_line_bg = palette.active_line_bg;
+    theme.git_created = palette.git_created;
+    theme.git_modified = palette.git_modified;
+    theme.git_deleted = palette.git_deleted;
+    theme.git_conflict = palette.git_conflict;
+    theme.git_renamed = palette.git_renamed;
+    theme.git_untracked = palette.git_untracked;
+    theme.git_ignored = palette.git_ignored;
 }
 
 fn apply_catalog_entry(entry: &ThemeCatalogEntry, theme: &mut AppTheme) {
@@ -1462,12 +1718,12 @@ fn apply_catalog_entry(entry: &ThemeCatalogEntry, theme: &mut AppTheme) {
     theme.syntax_default_color = entry.syntax_default_color;
 }
 
-fn apply_style_to_theme(style: &Value, theme: &mut AppTheme) {
-    apply_palette(&palette_from_style(style), theme);
+fn apply_style_to_theme(style: &Value, appearance: Appearance, theme: &mut AppTheme) {
+    apply_palette(&palette_from_style(style, appearance), theme);
     theme.syntax_styles = syntax_styles_from_style(style);
     theme.syntax_default_color = color_from_style(style, "editor.foreground")
         .or_else(|| color_from_style(style, "text"))
-        .unwrap_or(DEFAULT_TEXT_PRIMARY);
+        .unwrap_or(zed_defaults(appearance).editor_foreground);
 }
 
 fn resolve_optional_string(primary: Option<&str>, fallback: Option<&str>) -> Option<String> {
@@ -1490,54 +1746,105 @@ fn resolve_optional_font_size(primary: Option<f32>, fallback: Option<f32>) -> Op
         .or_else(|| fallback.filter(|value| value.is_finite() && *value > 0.0))
 }
 
-fn palette_from_style(style: &Value) -> Palette {
+fn palette_from_style(style: &Value, appearance: Appearance) -> Palette {
+    let d = zed_defaults(appearance);
+    // Zed-parity: every token resolves from its own key(s), else the static
+    // per-appearance default — never from another token's RESOLVED value. The
+    // only derived-from-resolved tokens are by design: `cursor` and
+    // `match_highlight` follow the resolved `text_accent`, and `input_text`
+    // follows the resolved `text_primary`.
+    let text_primary = color_from_style(style, "text").unwrap_or(d.text);
+    let text_accent = color_from_style(style, "text.accent").unwrap_or(d.text_accent);
+
     Palette {
-        bg: color_from_style(style, "background")
-            .or_else(|| color_from_style(style, "surface.background"))
-            .or_else(|| color_from_style(style, "editor.background"))
-            .unwrap_or(DEFAULT_BG),
-        border: color_from_style(style, "border").unwrap_or(DEFAULT_BORDER),
+        // The modal chrome uses Zed's elevated surface color (what Zed paints
+        // its pickers with). A missing key means the STATIC default, not the
+        // window/editor background: themes like RustRover Dark flatten
+        // `editor.background` without authoring `elevated_surface.background`,
+        // and Zed renders them two-tone. Full-bleed surface: clamped opaque
+        // (see `opaque`).
+        bg: opaque(
+            color_from_style(style, "elevated_surface.background")
+                .unwrap_or(d.elevated_surface_background),
+        ),
+        border: color_from_style(style, "border").unwrap_or(d.border),
+        border_variant: color_from_style(style, "border.variant").unwrap_or(d.border_variant),
         selected_row: color_from_style(style, "ghost_element.selected")
-            .or_else(|| color_from_style(style, "elevated_surface.background"))
-            .or_else(|| color_from_style(style, "drop_target.background"))
-            .or_else(|| color_from_style(style, "element.selected"))
-            .or_else(|| color_from_style(style, "element.active"))
-            .unwrap_or(DEFAULT_SELECTED_ROW),
-        hover_row: color_from_style(style, "element.hover").unwrap_or(DEFAULT_HOVER_ROW),
-        text_primary: color_from_style(style, "text").unwrap_or(DEFAULT_TEXT_PRIMARY),
+            .unwrap_or(d.ghost_element_selected),
+        hover_row: color_from_style(style, "ghost_element.hover").unwrap_or(d.ghost_element_hover),
+        text_primary,
+        // Same-concept muted-foreground chain (text.muted → icon.muted) kept;
+        // the final fallback is the static default.
         text_secondary: color_from_style(style, "text.muted")
             .or_else(|| color_from_style(style, "icon.muted"))
-            .unwrap_or(DEFAULT_TEXT_SECONDARY),
+            .unwrap_or(d.text_muted),
+        // Same-concept placeholder/disabled chain kept.
         text_dim: color_from_style(style, "text.placeholder")
             .or_else(|| color_from_style(style, "text.disabled"))
             .or_else(|| color_from_style(style, "icon.placeholder"))
-            .unwrap_or(DEFAULT_TEXT_DIM),
-        status_bar_bg: color_from_style(style, "status_bar.background")
-            .or_else(|| color_from_style(style, "title_bar.background"))
-            .unwrap_or(DEFAULT_STATUS_BAR_BG),
-        match_highlight: color_from_style(style, "search.match_background")
-            .or_else(|| color_from_style(style, "search.active_match_background"))
-            .or_else(|| color_from_style(style, "text.accent"))
-            .unwrap_or(DEFAULT_MATCH_HIGHLIGHT),
+            .unwrap_or(d.text_placeholder),
+        text_accent,
+        // The fuzzy tint / checkbox accent follows `text.accent` (Zed never
+        // recolors matched text with the search background).
+        match_highlight: text_accent,
         match_highlight_bg: color_from_style(style, "search.match_background")
             .or_else(|| color_from_style(style, "search.active_match_background"))
-            .unwrap_or(0x2C4870),
-        preview_bg: color_from_style(style, "editor.background")
-            .or_else(|| color_from_style(style, "surface.background"))
-            .unwrap_or(DEFAULT_PREVIEW_BG),
-        input_bg: color_from_style(style, "input.background").unwrap_or(0x232326),
-        input_text: color_from_style(style, "input.foreground").unwrap_or(0xE5E5EA),
-        cursor: color_from_style(style, "editor.cursor").unwrap_or(0x0A84FF),
-        cursor_selection: color_from_style(style, "editor.selectionBackground")
-            .unwrap_or(0x0A84FF44),
+            .unwrap_or(d.search_match_background),
+        // Full-bleed surface: clamped opaque (see `opaque`).
+        preview_bg: opaque(
+            color_from_style(style, "editor.background").unwrap_or(d.editor_background),
+        ),
+        // Full-bleed surface: clamped opaque (see `opaque`). No longer falls
+        // back to the resolved `preview_bg`; Zed's own gutter default happens
+        // to equal its editor background default.
+        editor_gutter_bg: opaque(
+            color_from_style(style, "editor.gutter.background")
+                .unwrap_or(d.editor_gutter_background),
+        ),
+        editor_line_number: color_from_style(style, "editor.line_number")
+            .unwrap_or(d.editor_line_number),
+        editor_active_line_number: color_from_style(style, "editor.active_line_number")
+            .unwrap_or(d.editor_active_line_number),
+        // Fallback tracks the resolved `text_primary`: typed input renders with
+        // `input_text` (text_field.rs), so themes lacking `input.foreground`
+        // (all bundled ones) paint typed text exactly as the pre-wiring path did.
+        input_text: color_from_style(style, "input.foreground").unwrap_or(text_primary),
+        cursor: color_from_style(style, "editor.cursor").unwrap_or(text_accent),
+        // Same-concept muted-icon chain kept.
         icon_muted: color_from_style(style, "icon.muted")
             .or_else(|| color_from_style(style, "icon.placeholder"))
             .or_else(|| color_from_style(style, "text.muted"))
-            .unwrap_or(DEFAULT_TEXT_SECONDARY),
-        icon_accent: color_from_style(style, "icon.accent")
-            .or_else(|| color_from_style(style, "text.accent"))
-            .unwrap_or(DEFAULT_MATCH_HIGHLIGHT),
-        picker_pane_width: DEFAULT_PICKER_PANE_WIDTH,
+            .unwrap_or(d.icon_muted),
+        // The Zed default carries a genuinely translucent alpha (dark_alpha /
+        // light_alpha scale) and blends live at paint time.
+        active_line_bg: color_from_style(style, "editor.active_line.background")
+            .unwrap_or(d.editor_active_line_background),
+        // Git tokens: newer-schema `version_control.*` keys first, then the flat
+        // status key still present in Zed theme JSONs, then Zed's default.
+        git_created: color_from_style(style, "version_control.added")
+            .or_else(|| color_from_style(style, "created"))
+            .unwrap_or(d.version_control_added),
+        git_modified: color_from_style(style, "version_control.modified")
+            .or_else(|| color_from_style(style, "modified"))
+            .unwrap_or(d.version_control_modified),
+        git_deleted: color_from_style(style, "version_control.deleted")
+            .or_else(|| color_from_style(style, "deleted"))
+            .unwrap_or(d.version_control_deleted),
+        git_conflict: color_from_style(style, "version_control.conflict")
+            .or_else(|| color_from_style(style, "conflict"))
+            .unwrap_or(d.version_control_conflict),
+        git_renamed: color_from_style(style, "version_control.renamed")
+            .or_else(|| color_from_style(style, "renamed"))
+            .unwrap_or(d.version_control_renamed),
+        // No flat status key: Zed remaps untracked to created, which would lose
+        // the distinct purple. Only the explicit `version_control.untracked`
+        // key may restyle it.
+        git_untracked: color_from_style(style, "version_control.untracked")
+            .unwrap_or(DEFAULT_GIT_UNTRACKED),
+        git_ignored: color_from_style(style, "version_control.ignored")
+            .or_else(|| color_from_style(style, "ignored"))
+            .unwrap_or(d.version_control_ignored),
+        picker_pane_width: None,
     }
 }
 
@@ -1612,7 +1919,11 @@ fn syntax_style_for_capture(styles: &[(String, SyntaxStyle)], capture_name: &str
 }
 
 fn syntax_style_color(style: &SyntaxStyle) -> Option<u32> {
-    style.color.as_deref().and_then(parse_color_rgb)
+    style.color.as_deref().and_then(parse_color_rgba)
+}
+
+fn syntax_style_bg(style: &SyntaxStyle) -> Option<u32> {
+    style.background_color.as_deref().and_then(parse_color_rgba)
 }
 
 fn syntax_token_matches_capture(token: &str, capture_name: &str, specificity: &mut usize) -> bool {
@@ -1676,11 +1987,11 @@ fn color_from_style(style: &Value, key: &str) -> Option<u32> {
     style
         .get(key)
         .and_then(Value::as_str)
-        .and_then(parse_color_rgb)
+        .and_then(parse_color_rgba)
 }
 
 fn apply_color(source: &Option<String>, target: &mut u32) {
-    if let Some(color) = source.as_deref().and_then(parse_color_rgb) {
+    if let Some(color) = source.as_deref().and_then(parse_color_rgba) {
         *target = color;
     }
 }
@@ -1707,29 +2018,29 @@ fn merge_json(base: &mut Value, overlay: &Value) {
     }
 }
 
-fn parse_color_rgb(color: &str) -> Option<u32> {
+// Parse a hex color string into 0xRRGGBBAA. Accepts `#rrggbb` (implied opaque),
+// `#rrggbbaa` (authored alpha preserved), and the `#rgb`/`#rgba` shorthands
+// (each digit doubles). The leading `#` is optional; invalid input is `None`.
+fn parse_color_rgba(color: &str) -> Option<u32> {
     let color = color.trim();
     let color = color.strip_prefix('#').unwrap_or(color);
 
     match color.len() {
-        3 => {
-            let mut expanded = String::with_capacity(6);
-            for ch in color.chars().take(3) {
+        3 | 4 => {
+            let mut expanded = String::with_capacity(8);
+            for ch in color.chars() {
                 expanded.push(ch);
                 expanded.push(ch);
+            }
+            if color.len() == 3 {
+                expanded.push_str("ff");
             }
             u32::from_str_radix(&expanded, 16).ok()
         }
-        4 => {
-            let mut expanded = String::with_capacity(8);
-            for ch in color.chars().take(4) {
-                expanded.push(ch);
-                expanded.push(ch);
-            }
-            u32::from_str_radix(&expanded[..6], 16).ok()
-        }
-        6 => u32::from_str_radix(color, 16).ok(),
-        8 => u32::from_str_radix(&color[..6], 16).ok(),
+        6 => u32::from_str_radix(color, 16)
+            .ok()
+            .map(|rgb| (rgb << 8) | 0xFF),
+        8 => u32::from_str_radix(color, 16).ok(),
         _ => None,
     }
 }
@@ -1743,6 +2054,28 @@ mod tests {
             color: Some(format!("#{color:06x}")),
             ..SyntaxStyle::default()
         }
+    }
+
+    #[test]
+    fn picker_pane_width_defaults_to_none_across_the_pipeline() {
+        assert_eq!(AppTheme::default().picker_pane_width, None);
+        assert_eq!(Palette::default().picker_pane_width, None);
+        // Theme JSON never carries a pane width — it is config-owned.
+        let style = serde_json::json!({ "background": "#101010" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).picker_pane_width,
+            None
+        );
+    }
+
+    #[test]
+    fn apply_palette_preserves_config_owned_picker_pane_width() {
+        let mut theme = AppTheme {
+            picker_pane_width: Some(430.0),
+            ..AppTheme::default()
+        };
+        apply_palette(&Palette::default(), &mut theme);
+        assert_eq!(theme.picker_pane_width, Some(430.0));
     }
 
     #[test]
@@ -1788,11 +2121,42 @@ mod tests {
 
     #[test]
     fn parses_hex_colors() {
-        assert_eq!(parse_color_rgb("#ff00aa"), Some(0xff00aa));
-        assert_eq!(parse_color_rgb("#ff00aaff"), Some(0xff00aa));
-        assert_eq!(parse_color_rgb("#f0a"), Some(0xff00aa));
-        assert_eq!(parse_color_rgb("#f0ab"), Some(0xff00aa));
-        assert_eq!(parse_color_rgb("#1234"), Some(0x112233));
+        // 6-hex appends an opaque alpha byte.
+        assert_eq!(parse_color_rgba("#ff00aa"), Some(0xff00aaff));
+        // 3-hex shorthand expands each digit, then appends opaque alpha.
+        assert_eq!(parse_color_rgba("#f0a"), Some(0xff00aaff));
+        // 4-hex shorthand expands each digit including the alpha digit.
+        assert_eq!(parse_color_rgba("#f0ab"), Some(0xff00aabb));
+        assert_eq!(parse_color_rgba("#1234"), Some(0x11223344));
+    }
+
+    #[test]
+    fn parse_color_rgba_preserves_authored_alpha() {
+        // 8-hex keeps the authored alpha byte verbatim.
+        assert_eq!(parse_color_rgba("#ff00aaff"), Some(0xff00aaff));
+        assert_eq!(parse_color_rgba("#2f343ebf"), Some(0x2f343ebf));
+        assert_eq!(parse_color_rgba("#74ade866"), Some(0x74ade866));
+        assert_eq!(parse_color_rgba("#00000000"), Some(0x00000000));
+    }
+
+    #[test]
+    fn parse_color_rgba_prefix_and_whitespace_handling() {
+        // The leading `#` is optional and surrounding whitespace is trimmed.
+        assert_eq!(parse_color_rgba("ff00aa"), Some(0xff00aaff));
+        assert_eq!(parse_color_rgba("2f343ebf"), Some(0x2f343ebf));
+        assert_eq!(parse_color_rgba("  #ff00aa  "), Some(0xff00aaff));
+    }
+
+    #[test]
+    fn parse_color_rgba_rejects_invalid_input() {
+        assert_eq!(parse_color_rgba(""), None);
+        assert_eq!(parse_color_rgba("#"), None);
+        assert_eq!(parse_color_rgba("#12345"), None); // bad length
+        assert_eq!(parse_color_rgba("#1234567"), None); // bad length
+        assert_eq!(parse_color_rgba("#123456789"), None); // bad length
+        assert_eq!(parse_color_rgba("#zzzzzz"), None); // non-hex digits
+        assert_eq!(parse_color_rgba("#zzz"), None);
+        assert_eq!(parse_color_rgba("not a color"), None);
     }
 
     #[test]
@@ -1822,7 +2186,7 @@ mod tests {
 
         assert_eq!(
             syntax_color_from_styles(&styles, "foo.bar.baz.qux", 0x999999),
-            0x222222
+            0x222222ff
         );
     }
 
@@ -1835,15 +2199,140 @@ mod tests {
                 ("constructor".to_string(), syntax_style(0x778899)),
                 ("punctuation".to_string(), syntax_style(0xaabbcc)),
             ],
-            syntax_default_color: 0xddeeff,
+            syntax_default_color: 0xddeeffff,
             ..AppTheme::default()
         };
 
-        assert_eq!(theme.syntax_color("constant"), 0x112233);
-        assert_eq!(theme.syntax_color("constructor"), 0x112233);
-        assert_eq!(theme.syntax_color("type"), 0x112233);
-        assert_eq!(theme.syntax_color("punctuation"), 0xddeeff);
-        assert_eq!(theme.syntax_color("punctuation.bracket"), 0xddeeff);
+        assert_eq!(theme.syntax_color("constant"), 0x112233ff);
+        assert_eq!(theme.syntax_color("constructor"), 0x112233ff);
+        assert_eq!(theme.syntax_color("type"), 0x112233ff);
+        assert_eq!(theme.syntax_color("punctuation"), 0xddeeffff);
+        assert_eq!(theme.syntax_color("punctuation.bracket"), 0xddeeffff);
+    }
+
+    #[test]
+    fn syntax_render_style_assembles_color_bg_and_font_flags() {
+        let theme = AppTheme {
+            syntax_styles: vec![(
+                "keyword".to_string(),
+                SyntaxStyle {
+                    color: Some("#112233".to_string()),
+                    background_color: Some("#445566".to_string()),
+                    font_style: Some("italic".to_string()),
+                    // Weight >= 600 => bold, exercised alongside italic.
+                    font_weight: Some(700.0),
+                },
+            )],
+            syntax_default_color: 0xddeeffff,
+            ..AppTheme::default()
+        };
+
+        assert_eq!(
+            theme.syntax_render_style("keyword"),
+            SyntaxRenderStyle {
+                color: 0x112233ff,
+                bg: Some(0x445566ff),
+                italic: true,
+                bold: true,
+                underline: false,
+                strikethrough: false,
+            }
+        );
+    }
+
+    #[test]
+    fn syntax_render_style_prefers_later_matches_on_ties() {
+        let theme = AppTheme {
+            syntax_styles: vec![
+                (
+                    "foo.bar".to_string(),
+                    SyntaxStyle {
+                        color: Some("#111111".to_string()),
+                        background_color: Some("#aaaaaa".to_string()),
+                        font_style: Some("underline".to_string()),
+                        font_weight: None,
+                    },
+                ),
+                (
+                    "baz.qux".to_string(),
+                    SyntaxStyle {
+                        color: Some("#222222".to_string()),
+                        background_color: Some("#bbbbbb".to_string()),
+                        font_style: Some("strikethrough".to_string()),
+                        font_weight: None,
+                    },
+                ),
+            ],
+            syntax_default_color: 0x999999ff,
+            ..AppTheme::default()
+        };
+
+        // Both tokens match "foo.bar.baz.qux" with specificity 2; the later
+        // entry wins the tie and supplies the whole assembled struct (mirrors
+        // `syntax_color_prefers_later_matches_on_ties`).
+        assert_eq!(
+            theme.syntax_render_style("foo.bar.baz.qux"),
+            SyntaxRenderStyle {
+                color: 0x222222ff,
+                bg: Some(0xbbbbbbff),
+                italic: false,
+                bold: false,
+                underline: false,
+                strikethrough: true,
+            }
+        );
+    }
+
+    #[test]
+    fn syntax_render_style_redirects_variable_family_captures() {
+        let theme = AppTheme {
+            syntax_styles: vec![(
+                "variable".to_string(),
+                SyntaxStyle {
+                    color: Some("#112233".to_string()),
+                    background_color: Some("#445566".to_string()),
+                    font_style: None,
+                    font_weight: None,
+                },
+            )],
+            syntax_default_color: 0xddeeffff,
+            ..AppTheme::default()
+        };
+
+        let expected = SyntaxRenderStyle {
+            color: 0x112233ff,
+            bg: Some(0x445566ff),
+            ..SyntaxRenderStyle::default()
+        };
+        assert_eq!(theme.syntax_render_style("constant"), expected);
+        assert_eq!(theme.syntax_render_style("constructor"), expected);
+        assert_eq!(theme.syntax_render_style("type"), expected);
+    }
+
+    #[test]
+    fn syntax_render_style_drops_background_for_punctuation() {
+        let theme = AppTheme {
+            syntax_styles: vec![(
+                "punctuation".to_string(),
+                SyntaxStyle {
+                    color: Some("#112233".to_string()),
+                    background_color: Some("#445566".to_string()),
+                    font_style: Some("italic".to_string()),
+                    font_weight: Some(700.0),
+                },
+            )],
+            syntax_default_color: 0xddeeffff,
+            ..AppTheme::default()
+        };
+
+        // Punctuation short-circuits to the default foreground with no bg or
+        // font flags, even though the theme set a background_color/font.
+        let expected = SyntaxRenderStyle {
+            color: 0xddeeffff,
+            ..SyntaxRenderStyle::default()
+        };
+        assert_eq!(theme.syntax_render_style("punctuation"), expected);
+        assert_eq!(theme.syntax_render_style("punctuation.bracket"), expected);
     }
 
     #[test]
@@ -1951,7 +2440,7 @@ mod tests {
 
     #[test]
     fn builtin_theme_catalog_includes_zed_themes() {
-        let catalog = load_theme_catalog().expect("theme catalog should load");
+        let catalog = builtin_theme_catalog().expect("theme catalog should load");
 
         assert!(catalog.contains_key("ayu dark"));
         assert!(catalog.contains_key("gruvbox dark"));
@@ -1960,23 +2449,24 @@ mod tests {
 
     #[test]
     fn apply_style_to_theme_sets_palette_and_syntax() {
+        // `bg` sources from `elevated_surface.background` (its own key only).
         let style = serde_json::json!({
-            "background": "#101010",
+            "elevated_surface.background": "#101010",
             "border": "#202020",
             "editor.foreground": "#fafafa",
             "syntax": { "keyword": { "color": "#abcdef" } }
         });
         let mut theme = AppTheme::default();
-        apply_style_to_theme(&style, &mut theme);
-        assert_eq!(theme.bg, 0x101010);
-        assert_eq!(theme.border, 0x202020);
-        assert_eq!(theme.syntax_default_color, 0xfafafa);
-        assert_eq!(theme.syntax_color("keyword"), 0xabcdef);
+        apply_style_to_theme(&style, Appearance::Dark, &mut theme);
+        assert_eq!(theme.bg, 0x101010ff);
+        assert_eq!(theme.border, 0x202020ff);
+        assert_eq!(theme.syntax_default_color, 0xfafafaff);
+        assert_eq!(theme.syntax_color("keyword"), 0xabcdefff);
     }
 
     #[test]
     fn catalog_entries_retain_raw_style() {
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
         let entry = catalog.get("one dark").expect("one dark present");
         assert!(entry.style.is_object());
         assert!(entry.style.get("syntax").is_some());
@@ -1993,7 +2483,7 @@ mod tests {
 
     #[test]
     fn override_merges_color_and_syntax_onto_base() {
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
 
         // Capture the base One Dark color for a token we will NOT override, by
         // applying the theme with an empty overrides map into a separate theme.
@@ -2006,14 +2496,15 @@ mod tests {
         overrides.insert(
             normalize_name("One Dark"),
             serde_json::json!({
-                "background": "#123456",
+                // `bg` sources from `elevated_surface.background` (One Dark has it).
+                "elevated_surface.background": "#123456",
                 "syntax": { "keyword": { "color": "#0f0f0f" } }
             }),
         );
         let mut theme = AppTheme::default();
         apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
-        assert_eq!(theme.bg, 0x123456); // overridden color
-        assert_eq!(theme.syntax_color("keyword"), 0x0f0f0f); // overridden token
+        assert_eq!(theme.bg, 0x123456ff); // overridden color
+        assert_eq!(theme.syntax_color("keyword"), 0x0f0f0fff); // overridden token
         // The non-overridden `string` token must still equal the captured base
         // value, proving `merge_json` merged per-token instead of replacing the
         // whole `syntax` object.
@@ -2025,7 +2516,7 @@ mod tests {
         // Filesystem-independent: build a catalog entry in-memory the same way
         // the real loader (`load_theme_family_contents`) derives its fields.
         let style = serde_json::json!({
-            "background": "#000000",
+            "elevated_surface.background": "#000000",
             "editor.foreground": "#eeeeee",
             "syntax": {
                 "keyword": { "color": "#111111" },
@@ -2033,23 +2524,25 @@ mod tests {
             }
         });
         let entry = ThemeCatalogEntry {
-            palette: palette_from_style(&style),
+            appearance: Appearance::Dark,
+            palette: palette_from_style(&style, Appearance::Dark),
             syntax_styles: syntax_styles_from_style(&style),
             syntax_default_color: color_from_style(&style, "editor.foreground")
                 .or_else(|| color_from_style(&style, "text"))
-                .unwrap_or(DEFAULT_TEXT_PRIMARY),
+                .unwrap_or(ZED_DARK_DEFAULTS.editor_foreground),
             style,
         };
 
         let mut catalog = HashMap::new();
         catalog.insert(normalize_name("Test Theme"), entry);
 
-        // Override only `keyword` and `background`; leave `string` untouched.
+        // Override only `keyword` and the elevated surface (fff's `bg` key);
+        // leave `string` untouched.
         let mut overrides = HashMap::new();
         overrides.insert(
             normalize_name("Test Theme"),
             serde_json::json!({
-                "background": "#333333",
+                "elevated_surface.background": "#333333",
                 "syntax": { "keyword": { "color": "#333333" } }
             }),
         );
@@ -2057,9 +2550,9 @@ mod tests {
         let mut theme = AppTheme::default();
         apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
 
-        assert_eq!(theme.syntax_color("keyword"), 0x333333); // overridden token
-        assert_eq!(theme.syntax_color("string"), 0x222222); // untouched base token
-        assert_eq!(theme.bg, 0x333333); // overridden background
+        assert_eq!(theme.syntax_color("keyword"), 0x333333ff); // overridden token
+        assert_eq!(theme.syntax_color("string"), 0x222222ff); // untouched base token
+        assert_eq!(theme.bg, 0x333333ff); // overridden background
     }
 
     #[test]
@@ -2070,24 +2563,25 @@ mod tests {
         // a unit test. This manually sequences `apply_theme_with_overrides` then
         // `apply_color` exactly as `sync_from_config` does, so the explicit fff
         // config must win for the same field.
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
         let mut overrides = HashMap::new();
         overrides.insert(
             normalize_name("One Dark"),
-            serde_json::json!({ "background": "#123456" }),
+            // `bg` sources from `elevated_surface.background` (One Dark has it).
+            serde_json::json!({ "elevated_surface.background": "#123456" }),
         );
         let mut theme = AppTheme::default();
         apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
-        assert_eq!(theme.bg, 0x123456); // Zed override applied first
+        assert_eq!(theme.bg, 0x123456ff); // Zed override applied first
 
         // fff `[theme].bg = "#abcdef"` applied last, exactly as `sync_from_config` does.
         apply_color(&Some("#abcdef".to_string()), &mut theme.bg);
-        assert_eq!(theme.bg, 0xabcdef); // explicit fff config wins over the Zed override
+        assert_eq!(theme.bg, 0xabcdefff); // explicit fff config wins over the Zed override
     }
 
     #[test]
     fn override_for_other_theme_does_not_apply() {
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
 
         // Capture One Dark's real base `bg` by applying it with empty overrides.
         let mut base = AppTheme::default();
@@ -2102,7 +2596,7 @@ mod tests {
         );
         let mut theme = AppTheme::default();
         apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
-        assert_ne!(theme.bg, 0x123456); // One Dark selected; Ayu override must NOT apply
+        assert_ne!(theme.bg, 0x123456ff); // One Dark selected; Ayu override must NOT apply
         // The result must equal the real, un-overridden One Dark base color,
         // proving the Ayu-keyed override was correctly ignored.
         assert_eq!(theme.bg, base_bg);
@@ -2110,7 +2604,7 @@ mod tests {
 
     #[test]
     fn no_override_matches_plain_catalog_application() {
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
         let empty = HashMap::new();
         let mut with_helper = AppTheme::default();
         apply_theme_with_overrides("One Dark", &catalog, &empty, &mut with_helper);
@@ -2173,29 +2667,30 @@ mod tests {
             .map(|(_, style)| style)
             .expect("keyword present");
         assert_eq!(keyword.color.as_deref(), Some("#aabbcc"));
-        assert_eq!(syntax_style_color(keyword), Some(0xaabbcc));
+        assert_eq!(syntax_style_color(keyword), Some(0xaabbccff));
     }
 
     #[test]
     fn mixed_case_override_key_applies_via_normalized_overrides() {
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
         // Raw, mixed-case override key as it might appear in Zed's settings.json.
         let mut raw_overrides = HashMap::new();
         raw_overrides.insert(
             "ONE DARK".to_string(),
-            serde_json::json!({ "background": "#123456" }),
+            // `bg` sources from `elevated_surface.background` (One Dark has it).
+            serde_json::json!({ "elevated_surface.background": "#123456" }),
         );
         let overrides = normalized_theme_overrides(&raw_overrides);
 
         let mut theme = AppTheme::default();
         apply_theme_with_overrides("One Dark", &catalog, &overrides, &mut theme);
         // Case-insensitive match works end-to-end: the override applied.
-        assert_eq!(theme.bg, 0x123456);
+        assert_eq!(theme.bg, 0x123456ff);
     }
 
     #[test]
     fn apply_theme_with_overrides_leaves_theme_unchanged_when_absent() {
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
 
         // Mutate `theme` into a clearly non-default state first, so the assertion
         // can distinguish the early-return guard actually firing from a no-op on a
@@ -2226,7 +2721,7 @@ mod tests {
 
     #[test]
     fn dynamic_selection_applies_override_for_resolved_variant_only() {
-        let catalog = load_theme_catalog().expect("catalog loads");
+        let catalog = builtin_theme_catalog().expect("catalog loads");
         let selection = ThemeSelection::Dynamic {
             mode: ThemeMode::System,
             light: "One Light".to_string(),
@@ -2240,11 +2735,12 @@ mod tests {
         let mut overrides = HashMap::new();
         overrides.insert(
             normalize_name("One Dark"),
-            serde_json::json!({ "background": "#123456" }),
+            // `bg` sources from `elevated_surface.background` (One Dark has it).
+            serde_json::json!({ "elevated_surface.background": "#123456" }),
         );
         let mut theme = AppTheme::default();
         apply_theme_with_overrides(&resolved, &catalog, &overrides, &mut theme);
-        assert_eq!(theme.bg, 0x123456);
+        assert_eq!(theme.bg, 0x123456ff);
 
         // Capture the resolved variant's real base bg (apply One Dark with EMPTY
         // overrides) so the negative half can prove the base was applied, not just
@@ -2255,7 +2751,7 @@ mod tests {
 
         // An override keyed on the OTHER variant ("One Light") does not apply; the
         // resolved base ("One Dark") is applied via `apply_catalog_entry` instead.
-        let sentinel = 0x654321;
+        let sentinel = 0x654321ff_u32;
         let mut other_overrides = HashMap::new();
         other_overrides.insert(
             normalize_name("One Light"),
@@ -2282,11 +2778,12 @@ mod tests {
             }
         });
         let entry = ThemeCatalogEntry {
-            palette: palette_from_style(&style),
+            appearance: Appearance::Dark,
+            palette: palette_from_style(&style, Appearance::Dark),
             syntax_styles: syntax_styles_from_style(&style),
             syntax_default_color: color_from_style(&style, "editor.foreground")
                 .or_else(|| color_from_style(&style, "text"))
-                .unwrap_or(DEFAULT_TEXT_PRIMARY),
+                .unwrap_or(ZED_DARK_DEFAULTS.editor_foreground),
             style,
         };
 
@@ -2310,11 +2807,11 @@ mod tests {
         apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
 
         // The valid override reached the merge and applied.
-        assert_eq!(theme.syntax_color("string"), 0x44aa55);
+        assert_eq!(theme.syntax_color("string"), 0x44aa55ff);
         // The malformed color is unparseable, so `keyword` resolves to the theme's
-        // default foreground color (0xeeeeee), not the bogus override.
-        assert_eq!(theme.syntax_default_color, 0xeeeeee);
-        assert_eq!(theme.syntax_color("keyword"), 0xeeeeee);
+        // default foreground color (0xeeeeeeff), not the bogus override.
+        assert_eq!(theme.syntax_default_color, 0xeeeeeeff);
+        assert_eq!(theme.syntax_color("keyword"), 0xeeeeeeff);
     }
 
     #[test]
@@ -2352,7 +2849,7 @@ mod tests {
         // override leaves the base value intact, while a sibling non-null override
         // in the same payload still applies.
         let style = serde_json::json!({
-            "background": "#000000",
+            "elevated_surface.background": "#000000",
             "editor.foreground": "#eeeeee",
             "syntax": {
                 "keyword": { "color": "#111111" },
@@ -2360,24 +2857,25 @@ mod tests {
             }
         });
         let entry = ThemeCatalogEntry {
-            palette: palette_from_style(&style),
+            appearance: Appearance::Dark,
+            palette: palette_from_style(&style, Appearance::Dark),
             syntax_styles: syntax_styles_from_style(&style),
             syntax_default_color: color_from_style(&style, "editor.foreground")
                 .or_else(|| color_from_style(&style, "text"))
-                .unwrap_or(DEFAULT_TEXT_PRIMARY),
+                .unwrap_or(ZED_DARK_DEFAULTS.editor_foreground),
             style,
         };
 
         let mut catalog = HashMap::new();
         catalog.insert(normalize_name("Test Theme"), entry);
 
-        // `keyword.color` and `background` are nulled (no-op); `string` is a real
-        // sibling override that must still apply.
+        // `keyword.color` and the elevated surface (fff's `bg` key) are nulled
+        // (no-op); `string` is a real sibling override that must still apply.
         let mut overrides = HashMap::new();
         overrides.insert(
             normalize_name("Test Theme"),
             serde_json::json!({
-                "background": null,
+                "elevated_surface.background": null,
                 "syntax": {
                     "keyword": { "color": null },
                     "string": { "color": "#44aa55" }
@@ -2389,9 +2887,1105 @@ mod tests {
         apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
 
         // Null left the base values untouched.
-        assert_eq!(theme.syntax_color("keyword"), 0x111111);
-        assert_eq!(theme.bg, 0x000000);
+        assert_eq!(theme.syntax_color("keyword"), 0x111111ff);
+        assert_eq!(theme.bg, 0x000000ff);
         // The sibling non-null override still applied.
-        assert_eq!(theme.syntax_color("string"), 0x44aa55);
+        assert_eq!(theme.syntax_color("string"), 0x44aa55ff);
+    }
+
+    #[test]
+    fn palette_maps_new_tokens_from_theme_json() {
+        // Both the newer `version_control.*` schema and the flat status keys are
+        // present: the `version_control.*` key must win for every git token.
+        let style = serde_json::json!({
+            "background": "#101010",
+            "elevated_surface.background": "#181818",
+            "editor.active_line.background": "#2f343ebf",
+            "version_control.added": "#27a657",
+            "version_control.modified": "#d3b020",
+            "version_control.deleted": "#e06c76",
+            "version_control.conflict": "#dec184",
+            "version_control.renamed": "#74ade8",
+            "version_control.untracked": "#9b8aec",
+            "version_control.ignored": "#878a98",
+            "created": "#111111",
+            "modified": "#222222",
+            "deleted": "#333333",
+            "conflict": "#444444",
+            "renamed": "#555555",
+            "ignored": "#666666"
+        });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        // `bg` sources its own key: the elevated surface.
+        assert_eq!(palette.bg, 0x181818ff);
+        // The authored alpha suffix is preserved by `parse_color_rgba`.
+        assert_eq!(palette.active_line_bg, 0x2f343ebf);
+        assert_eq!(palette.git_created, 0x27a657ff);
+        assert_eq!(palette.git_modified, 0xd3b020ff);
+        assert_eq!(palette.git_deleted, 0xe06c76ff);
+        assert_eq!(palette.git_conflict, 0xdec184ff);
+        assert_eq!(palette.git_renamed, 0x74ade8ff);
+        assert_eq!(palette.git_untracked, 0x9b8aecff);
+        assert_eq!(palette.git_ignored, 0x878a98ff);
+    }
+
+    #[test]
+    fn palette_git_tokens_fall_back_to_flat_status_keys() {
+        // Only the flat status keys (as real Zed theme JSONs like one.json carry
+        // at the top level) are present: they are the second lookup choice.
+        let style = serde_json::json!({
+            "created": "#111111",
+            "modified": "#222222",
+            "deleted": "#333333",
+            "conflict": "#444444",
+            "renamed": "#555555",
+            "ignored": "#666666"
+        });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.git_created, 0x111111ff);
+        assert_eq!(palette.git_modified, 0x222222ff);
+        assert_eq!(palette.git_deleted, 0x333333ff);
+        assert_eq!(palette.git_conflict, 0x444444ff);
+        assert_eq!(palette.git_renamed, 0x555555ff);
+        assert_eq!(palette.git_ignored, 0x666666ff);
+        // Untracked has NO flat key on purpose (Zed remaps untracked to created,
+        // which would lose the distinct purple): `created` must not leak into it.
+        assert_eq!(palette.git_untracked, DEFAULT_GIT_UNTRACKED);
+    }
+
+    #[test]
+    fn palette_new_tokens_fall_back_when_keys_missing() {
+        let style = serde_json::json!({ "background": "#101010" });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        // No elevated surface key: `bg` is the STATIC dark default — the plain
+        // `background` key is no longer part of any chain (Zed semantics).
+        assert_eq!(palette.bg, ZED_DARK_DEFAULTS.elevated_surface_background);
+        // Git fallbacks are Zed's `version_control_*` dark defaults.
+        assert_eq!(palette.git_created, 0x2E9E48FF);
+        assert_eq!(palette.git_modified, 0xD3AF1DFF);
+        assert_eq!(palette.git_deleted, 0x78081AFF);
+        assert_eq!(palette.git_conflict, 0xFFE0C2FF);
+        assert_eq!(palette.git_renamed, 0xD3AF1DFF); // Zed reuses MODIFIED_COLOR
+        assert_eq!(palette.git_untracked, 0xA48EFFFF); // distinct purple kept (no Zed default)
+        assert_eq!(palette.git_ignored, 0xEEEEEEFF);
+    }
+
+    #[test]
+    fn active_line_bg_falls_back_to_zed_static_default() {
+        // Without `editor.active_line.background`, the token is Zed's static
+        // default (dark_alpha scale — genuinely translucent, blended live at
+        // paint time via `rgba(...)`) — NOT derived from the selection color.
+        let style = serde_json::json!({
+            "ghost_element.selected": "#404040",
+            "editor.background": "#000000"
+        });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(
+            palette.active_line_bg,
+            ZED_DARK_DEFAULTS.editor_active_line_background
+        );
+        assert_eq!(palette.active_line_bg, 0xF6F6F513);
+        // Same value in the hardcoded defaults.
+        assert_eq!(Palette::default().active_line_bg, 0xF6F6F513);
+    }
+
+    #[test]
+    fn active_line_bg_sync_preserves_authored_alpha() {
+        // One Dark authors `editor.active_line.background` as `#2f343ebf` — the
+        // same RGB as its elevated surface `bg` but at 75% alpha. The old parser
+        // dropped the alpha, collapsing the token to exactly `bg` (invisible
+        // active line). It must now stay translucent and distinct from `bg`.
+        let catalog = builtin_theme_catalog().expect("catalog loads");
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &HashMap::new(), &mut theme);
+        assert_eq!(theme.bg, 0x2f343eff);
+        assert_eq!(theme.active_line_bg, 0x2f343ebf);
+        assert_ne!(theme.active_line_bg, theme.bg);
+        // The translucent match background keeps its authored 40% alpha too.
+        assert_eq!(theme.match_highlight_bg, 0x74ade866);
+    }
+
+    #[test]
+    fn apply_color_override_accepts_opaque_and_alpha_hex() {
+        // `[theme]` config overrides run through `apply_color`: 6-hex is
+        // implied-opaque, 8-hex keeps its authored alpha byte, and invalid or
+        // absent input leaves the previous value untouched.
+        let mut color = 0x000000ff;
+        apply_color(&Some("#abcdef".to_string()), &mut color);
+        assert_eq!(color, 0xabcdefff);
+        apply_color(&Some("#11223344".to_string()), &mut color);
+        assert_eq!(color, 0x11223344);
+        apply_color(&Some("not a color".to_string()), &mut color);
+        assert_eq!(color, 0x11223344);
+        apply_color(&None, &mut color);
+        assert_eq!(color, 0x11223344);
+    }
+
+    #[test]
+    fn all_opaque_theme_yields_fully_opaque_palette() {
+        // A theme authored entirely in 6-hex (no alpha anywhere) must resolve
+        // every palette token fully opaque — live `rgba()` blending of `..ff`
+        // values paints identically to the old pre-refactor `rgb()` path.
+        // Every token's primary key is authored, so the static Zed defaults
+        // (several of which genuinely carry alpha: ghost elements,
+        // active_line_bg, dark line numbers) never engage.
+        let style = serde_json::json!({
+            "elevated_surface.background": "#101010",
+            "ghost_element.selected": "#202020",
+            "ghost_element.hover": "#303030",
+            "editor.background": "#050505",
+            "border": "#404040",
+            "border.variant": "#353535",
+            "text": "#e0e0e0",
+            "text.muted": "#a0a0a0",
+            "text.placeholder": "#606060",
+            "text.accent": "#4a9eff",
+            "search.match_background": "#2c4870",
+            "editor.gutter.background": "#070707",
+            "editor.line_number": "#707070",
+            "editor.active_line_number": "#d0d0d0",
+            "editor.active_line.background": "#151515",
+            "editor.cursor": "#4a9eff",
+            "input.foreground": "#e5e5ea",
+            "icon.muted": "#909090",
+            "version_control.added": "#27a657",
+            "version_control.modified": "#d3b020",
+            "version_control.deleted": "#e06c76",
+            "version_control.conflict": "#dec184",
+            "version_control.renamed": "#74ade8",
+            "version_control.untracked": "#9b8aec",
+            "version_control.ignored": "#878a98"
+        });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        for (name, value) in [
+            ("bg", palette.bg),
+            ("border", palette.border),
+            ("border_variant", palette.border_variant),
+            ("selected_row", palette.selected_row),
+            ("hover_row", palette.hover_row),
+            ("text_primary", palette.text_primary),
+            ("text_secondary", palette.text_secondary),
+            ("text_dim", palette.text_dim),
+            ("text_accent", palette.text_accent),
+            ("match_highlight", palette.match_highlight),
+            ("match_highlight_bg", palette.match_highlight_bg),
+            ("preview_bg", palette.preview_bg),
+            ("editor_gutter_bg", palette.editor_gutter_bg),
+            ("editor_line_number", palette.editor_line_number),
+            (
+                "editor_active_line_number",
+                palette.editor_active_line_number,
+            ),
+            ("input_text", palette.input_text),
+            ("cursor", palette.cursor),
+            ("icon_muted", palette.icon_muted),
+            ("active_line_bg", palette.active_line_bg),
+            ("git_created", palette.git_created),
+            ("git_modified", palette.git_modified),
+            ("git_deleted", palette.git_deleted),
+            ("git_conflict", palette.git_conflict),
+            ("git_renamed", palette.git_renamed),
+            ("git_untracked", palette.git_untracked),
+            ("git_ignored", palette.git_ignored),
+        ] {
+            assert_eq!(value & 0xFF, 0xFF, "{name} must resolve fully opaque");
+        }
+    }
+
+    #[test]
+    fn border_variant_resolves_own_key_else_static_default() {
+        // Key present: `border.variant` wins.
+        let style = serde_json::json!({ "border.variant": "#363c46", "border": "#464b57" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).border_variant,
+            0x363c46ff
+        );
+        // Key absent: the STATIC default — no longer a copy of the resolved
+        // `border` (Zed semantics: no inter-key inheritance).
+        let style = serde_json::json!({ "border": "#464b57" });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.border_variant, ZED_DARK_DEFAULTS.border_variant);
+        assert_ne!(palette.border_variant, palette.border);
+        // All absent: same static default.
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).border_variant,
+            0x31312EFF
+        );
+        // 8-hex authored alpha threads through unclamped: `border_variant` is
+        // subtle chrome, not a full-bleed surface, so it blends live at paint.
+        let style = serde_json::json!({ "border.variant": "#363c4680" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).border_variant,
+            0x363c4680
+        );
+    }
+
+    #[test]
+    fn text_accent_maps_key_with_zed_blue_fallback() {
+        let style = serde_json::json!({ "text.accent": "#74ade8" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).text_accent,
+            0x74ade8ff
+        );
+        // Key absent: Zed's static default (blue dark step_11).
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).text_accent,
+            0x70B8FFFF
+        );
+        // 8-hex authored alpha survives the chain (accent tint blends live).
+        let style = serde_json::json!({ "text.accent": "#74ade866" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).text_accent,
+            0x74ade866
+        );
+    }
+
+    #[test]
+    fn editor_line_number_falls_back_to_zed_static_default() {
+        // Key present.
+        let style = serde_json::json!({ "editor.line_number": "#4e5a5f" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).editor_line_number,
+            0x4e5a5fff
+        );
+        // Key absent: the STATIC default (dark_alpha step_10) — `text_dim` no
+        // longer leaks into the gutter.
+        let style = serde_json::json!({ "text.placeholder": "#aabbcc" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).editor_line_number,
+            0xFFFDEE73
+        );
+        // All absent: same static default.
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).editor_line_number,
+            ZED_DARK_DEFAULTS.editor_line_number
+        );
+        // 8-hex authored alpha survives: line numbers paint over the gutter and
+        // blend live at paint time (not a full-bleed surface).
+        let style = serde_json::json!({ "editor.line_number": "#4e5a5f80" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).editor_line_number,
+            0x4e5a5f80
+        );
+    }
+
+    #[test]
+    fn editor_active_line_number_falls_back_to_zed_static_default() {
+        // Key present.
+        let style = serde_json::json!({ "editor.active_line_number": "#d0d4da" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).editor_active_line_number,
+            0xd0d4daff
+        );
+        // Key absent: the STATIC default (dark_alpha step_11) — `text` no
+        // longer leaks into the active line number.
+        let style = serde_json::json!({ "text": "#c8ccd4" });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.editor_active_line_number, 0xFFFCF4B0);
+        assert_ne!(palette.editor_active_line_number, palette.text_primary);
+        // All absent: same static default.
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).editor_active_line_number,
+            ZED_DARK_DEFAULTS.editor_active_line_number
+        );
+        // 8-hex authored alpha survives (active-line number blends live at paint).
+        let style = serde_json::json!({ "editor.active_line_number": "#d0d4da80" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).editor_active_line_number,
+            0xd0d4da80
+        );
+    }
+
+    #[test]
+    fn editor_gutter_bg_falls_back_to_zed_static_default() {
+        // Key present: distinct from the editor background.
+        let style = serde_json::json!({
+            "editor.gutter.background": "#282c33",
+            "editor.background": "#101010"
+        });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).editor_gutter_bg,
+            0x282c33ff
+        );
+        // Key absent: the STATIC default — the resolved `preview_bg` no longer
+        // leaks into the gutter (Zed's own defaults happen to make them equal,
+        // but an AUTHORED editor.background does not follow).
+        let style = serde_json::json!({ "editor.background": "#101010" });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.editor_gutter_bg, 0x111110FF);
+        assert_ne!(palette.editor_gutter_bg, palette.preview_bg);
+        // All absent: same static default.
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).editor_gutter_bg,
+            ZED_DARK_DEFAULTS.editor_gutter_background
+        );
+        // 8-hex authored alpha is CLAMPED opaque: the gutter is a full-bleed
+        // surface painted over the opaque window (see `opaque`).
+        let style = serde_json::json!({ "editor.gutter.background": "#282c3380" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).editor_gutter_bg,
+            0x282c33ff
+        );
+    }
+
+    #[test]
+    fn hover_row_resolves_own_key_else_static_default() {
+        // Key present: `ghost_element.hover` (what Zed's picker rows use) wins.
+        let style = serde_json::json!({
+            "ghost_element.hover": "#363c46",
+            "element.hover": "#111111"
+        });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).hover_row,
+            0x363c46ff
+        );
+        // Key absent: the STATIC default — `element.hover` (a different
+        // component's token) no longer leaks into picker rows.
+        let style = serde_json::json!({ "element.hover": "#111111" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).hover_row,
+            ZED_DARK_DEFAULTS.ghost_element_hover
+        );
+        // All absent: same static default (dark_alpha step_4).
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).hover_row,
+            0xFEFEF31B
+        );
+    }
+
+    #[test]
+    fn match_highlight_follows_text_accent_not_search_background() {
+        // `match_highlight` (fuzzy tint / checkbox accent) sources `text.accent`.
+        let style = serde_json::json!({
+            "text.accent": "#74ade8",
+            "search.match_background": "#74ade866"
+        });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).match_highlight,
+            0x74ade8ff
+        );
+        // The search background no longer leaks into the accent token: without
+        // `text.accent` the fallback is Zed's static accent, not the search bg.
+        let style = serde_json::json!({ "search.match_background": "#74ade866" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).match_highlight,
+            ZED_DARK_DEFAULTS.text_accent
+        );
+    }
+
+    #[test]
+    fn match_highlight_bg_chain_preserves_alpha() {
+        // Key present: authored alpha preserved.
+        let style = serde_json::json!({ "search.match_background": "#74ade866" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).match_highlight_bg,
+            0x74ade866
+        );
+        // Key absent: next in chain, alpha preserved there too.
+        let style = serde_json::json!({ "search.active_match_background": "#11223344" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).match_highlight_bg,
+            0x11223344
+        );
+        // All absent: Zed's static default (dark step_5, opaque — the default
+        // itself authors no alpha).
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).match_highlight_bg,
+            0x31312EFF
+        );
+    }
+
+    #[test]
+    fn cursor_falls_back_to_text_accent() {
+        // Key present.
+        let style = serde_json::json!({ "editor.cursor": "#ff0000", "text.accent": "#74ade8" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).cursor,
+            0xff0000ff
+        );
+        // Key absent (e.g. One Dark has no `editor.cursor`): the resolved
+        // `text_accent` is the cursor color (derived-from-resolved by design).
+        let style = serde_json::json!({ "text.accent": "#74ade8" });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.cursor, 0x74ade8ff);
+        assert_eq!(palette.cursor, palette.text_accent);
+        // All absent: Zed's static accent default.
+        assert_eq!(
+            palette_from_style(&serde_json::json!({}), Appearance::Dark).cursor,
+            ZED_DARK_DEFAULTS.text_accent
+        );
+        // 8-hex authored alpha survives (the cursor blends live at paint time).
+        let style = serde_json::json!({ "editor.cursor": "#ff000080" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).cursor,
+            0xff000080
+        );
+    }
+
+    #[test]
+    fn one_dark_sync_resolves_zed_parity_tokens() {
+        // End-to-end against the bundled One Dark JSON: the exact hexes Zed uses.
+        let catalog = builtin_theme_catalog().expect("catalog loads");
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("One Dark", &catalog, &HashMap::new(), &mut theme);
+        assert_eq!(theme.border_variant, 0x363c46ff);
+        assert_eq!(theme.text_accent, 0x74ade8ff);
+        assert_eq!(theme.match_highlight, 0x74ade8ff);
+        assert_eq!(theme.hover_row, 0x363c46ff); // ghost_element.hover
+        assert_eq!(theme.editor_gutter_bg, 0x282c33ff);
+        assert_eq!(theme.editor_line_number, 0x4e5a5fff);
+        assert_eq!(theme.editor_active_line_number, 0xd0d4daff);
+        // One Dark has no `editor.cursor` key: the cursor lands on the accent.
+        assert_eq!(theme.cursor, 0x74ade8ff);
+    }
+
+    #[test]
+    fn apply_palette_copies_zed_parity_tokens() {
+        let palette = Palette {
+            border_variant: 0x01010101,
+            text_accent: 0x02020202,
+            editor_gutter_bg: 0x03030303,
+            editor_line_number: 0x04040404,
+            editor_active_line_number: 0x05050505,
+            cursor: 0x06060606,
+            ..Palette::default()
+        };
+        let mut theme = AppTheme::default();
+        apply_palette(&palette, &mut theme);
+        assert_eq!(theme.border_variant, 0x01010101);
+        assert_eq!(theme.text_accent, 0x02020202);
+        assert_eq!(theme.editor_gutter_bg, 0x03030303);
+        assert_eq!(theme.editor_line_number, 0x04040404);
+        assert_eq!(theme.editor_active_line_number, 0x05050505);
+        assert_eq!(theme.cursor, 0x06060606);
+    }
+
+    #[test]
+    fn apply_palette_copies_new_tokens() {
+        let palette = Palette {
+            active_line_bg: 0x010101,
+            git_created: 0x020202,
+            git_modified: 0x030303,
+            git_deleted: 0x040404,
+            git_conflict: 0x050505,
+            git_renamed: 0x060606,
+            git_untracked: 0x070707,
+            git_ignored: 0x080808,
+            ..Palette::default()
+        };
+        let mut theme = AppTheme::default();
+        apply_palette(&palette, &mut theme);
+        assert_eq!(theme.active_line_bg, 0x010101);
+        assert_eq!(theme.git_created, 0x020202);
+        assert_eq!(theme.git_modified, 0x030303);
+        assert_eq!(theme.git_deleted, 0x040404);
+        assert_eq!(theme.git_conflict, 0x050505);
+        assert_eq!(theme.git_renamed, 0x060606);
+        assert_eq!(theme.git_untracked, 0x070707);
+        assert_eq!(theme.git_ignored, 0x080808);
+    }
+
+    #[test]
+    fn with_alpha_masks_off_existing_alpha() {
+        // Replaces the alpha byte, preserving RGB. The base carries a NONZERO top
+        // byte on purpose: the pre-RGBA `(base << 8) | alpha` form would shift RR
+        // out and leak GG..into the result, so this case pins the correct masking.
+        assert_eq!(with_alpha(0xAABBCCFF, 0x80), 0xAABBCC80);
+        // What the buggy `<< 8` form would have produced — must NOT match.
+        assert_ne!(with_alpha(0xAABBCCFF, 0x80), (0xAABBCCFFu32 << 8) | 0x80);
+        // Zero base and full alpha behave as expected.
+        assert_eq!(with_alpha(0x00000000, 0xFF), 0x000000FF);
+        assert_eq!(with_alpha(0x12345678, 0x00), 0x12345600);
+    }
+
+    #[test]
+    fn input_text_falls_back_to_text_primary() {
+        // No `input.foreground` key (every bundled theme): input text tracks the
+        // resolved `text_primary`, so wiring `input_text` into typed-text
+        // rendering is behavior-neutral under those themes.
+        let style = serde_json::json!({ "text": "#c8ccd4" });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.input_text, 0xc8ccd4ff);
+        assert_eq!(palette.input_text, palette.text_primary);
+        // Key present: the theme's distinct input color wins.
+        let style = serde_json::json!({ "text": "#c8ccd4", "input.foreground": "#e5e5ea" });
+        assert_eq!(
+            palette_from_style(&style, Appearance::Dark).input_text,
+            0xe5e5eaff
+        );
+        // All absent: Zed's static `text` default (matching `text_primary`).
+        let palette = palette_from_style(&serde_json::json!({}), Appearance::Dark);
+        assert_eq!(palette.input_text, ZED_DARK_DEFAULTS.text);
+        assert_eq!(palette.input_text, palette.text_primary);
+    }
+
+    #[test]
+    fn palette_round_trips_every_color_field() {
+        // Field-swap guard for the AppTheme -> Palette copy in `palette_from_theme`
+        // (what `palette()` delegates to). Each of the 26 color tokens gets a
+        // distinct sentinel; a mis-wired copy line (e.g. reading the wrong theme
+        // field) fails exactly one assertion. `picker_pane_width` rides along too.
+        let theme = AppTheme {
+            bg: 0x01010101,
+            border: 0x02020202,
+            border_variant: 0x03030303,
+            selected_row: 0x04040404,
+            hover_row: 0x05050505,
+            text_primary: 0x06060606,
+            text_secondary: 0x07070707,
+            text_dim: 0x08080808,
+            text_accent: 0x09090909,
+            match_highlight: 0x0a0a0a0a,
+            match_highlight_bg: 0x0b0b0b0b,
+            preview_bg: 0x0c0c0c0c,
+            editor_gutter_bg: 0x0d0d0d0d,
+            editor_line_number: 0x0e0e0e0e,
+            editor_active_line_number: 0x0f0f0f0f,
+            input_text: 0x10101010,
+            cursor: 0x11111111,
+            icon_muted: 0x12121212,
+            active_line_bg: 0x14141414,
+            git_created: 0x15151515,
+            git_modified: 0x16161616,
+            git_deleted: 0x17171717,
+            git_conflict: 0x18181818,
+            git_renamed: 0x19191919,
+            git_untracked: 0x1a1a1a1a,
+            git_ignored: 0x1b1b1b1b,
+            picker_pane_width: Some(321.0),
+            ..AppTheme::default()
+        };
+        let palette = palette_from_theme(&theme);
+        assert_eq!(palette.bg, 0x01010101);
+        assert_eq!(palette.border, 0x02020202);
+        assert_eq!(palette.border_variant, 0x03030303);
+        assert_eq!(palette.selected_row, 0x04040404);
+        assert_eq!(palette.hover_row, 0x05050505);
+        assert_eq!(palette.text_primary, 0x06060606);
+        assert_eq!(palette.text_secondary, 0x07070707);
+        assert_eq!(palette.text_dim, 0x08080808);
+        assert_eq!(palette.text_accent, 0x09090909);
+        assert_eq!(palette.match_highlight, 0x0a0a0a0a);
+        assert_eq!(palette.match_highlight_bg, 0x0b0b0b0b);
+        assert_eq!(palette.preview_bg, 0x0c0c0c0c);
+        assert_eq!(palette.editor_gutter_bg, 0x0d0d0d0d);
+        assert_eq!(palette.editor_line_number, 0x0e0e0e0e);
+        assert_eq!(palette.editor_active_line_number, 0x0f0f0f0f);
+        assert_eq!(palette.input_text, 0x10101010);
+        assert_eq!(palette.cursor, 0x11111111);
+        assert_eq!(palette.icon_muted, 0x12121212);
+        assert_eq!(palette.active_line_bg, 0x14141414);
+        assert_eq!(palette.git_created, 0x15151515);
+        assert_eq!(palette.git_modified, 0x16161616);
+        assert_eq!(palette.git_deleted, 0x17171717);
+        assert_eq!(palette.git_conflict, 0x18181818);
+        assert_eq!(palette.git_renamed, 0x19191919);
+        assert_eq!(palette.git_untracked, 0x1a1a1a1a);
+        assert_eq!(palette.git_ignored, 0x1b1b1b1b);
+        assert_eq!(palette.picker_pane_width, Some(321.0));
+    }
+
+    #[test]
+    fn zed_override_deep_merges_git_tokens() {
+        // A Zed `theme_overrides` payload overriding ONE git key must apply to
+        // that token while the base theme's other git keys stay intact (the
+        // merge happens on the raw JSON before palette extraction).
+        let style = serde_json::json!({
+            "background": "#000000",
+            "editor.foreground": "#eeeeee",
+            "version_control.added": "#27a657",
+            "version_control.deleted": "#e06c76"
+        });
+        let entry = ThemeCatalogEntry {
+            appearance: Appearance::Dark,
+            palette: palette_from_style(&style, Appearance::Dark),
+            syntax_styles: syntax_styles_from_style(&style),
+            syntax_default_color: color_from_style(&style, "editor.foreground")
+                .or_else(|| color_from_style(&style, "text"))
+                .unwrap_or(ZED_DARK_DEFAULTS.editor_foreground),
+            style,
+        };
+        let mut catalog = HashMap::new();
+        catalog.insert(normalize_name("Test Theme"), entry);
+
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("Test Theme"),
+            serde_json::json!({ "version_control.added": "#123456" }),
+        );
+
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
+        assert_eq!(theme.git_created, 0x123456ff); // overridden
+        assert_eq!(theme.git_deleted, 0xe06c76ff); // untouched base key
+        assert_eq!(theme.git_untracked, DEFAULT_GIT_UNTRACKED); // fallback intact
+    }
+
+    #[test]
+    fn fff_config_git_color_wins_over_zed_override() {
+        // Same precedence contract as `fff_config_color_wins_over_zed_override`,
+        // exercised for a new token: Zed override first, fff `[theme]` last.
+        let style = serde_json::json!({ "version_control.added": "#27a657" });
+        let entry = ThemeCatalogEntry {
+            appearance: Appearance::Dark,
+            palette: palette_from_style(&style, Appearance::Dark),
+            syntax_styles: syntax_styles_from_style(&style),
+            syntax_default_color: ZED_DARK_DEFAULTS.editor_foreground,
+            style,
+        };
+        let mut catalog = HashMap::new();
+        catalog.insert(normalize_name("Test Theme"), entry);
+
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            normalize_name("Test Theme"),
+            serde_json::json!({ "version_control.added": "#123456" }),
+        );
+        let mut theme = AppTheme::default();
+        apply_theme_with_overrides("Test Theme", &catalog, &overrides, &mut theme);
+        assert_eq!(theme.git_created, 0x123456ff); // Zed override applied first
+
+        // fff `[theme].git_created` applied last, exactly as `sync_from_config` does.
+        apply_color(&Some("#abcdef".to_string()), &mut theme.git_created);
+        assert_eq!(theme.git_created, 0xabcdefff);
+    }
+
+    #[test]
+    fn full_bleed_surface_tokens_clamp_to_opaque_at_resolution() {
+        // A config override like `bg = "#10101080"` or a third-party Zed theme
+        // authoring alpha on the full-bleed surfaces would render the picker
+        // partially see-through over the opaque OS window. `bg`, `preview_bg`,
+        // and `editor_gutter_bg` must resolve fully opaque, while the
+        // blend-at-paint tokens (`active_line_bg`, `match_highlight_bg`) keep
+        // their authored alpha.
+        let style = serde_json::json!({
+            "elevated_surface.background": "#10101080",
+            "editor.background": "#20202040",
+            "editor.gutter.background": "#30303010",
+            "editor.active_line.background": "#2f343ebf",
+            "search.match_background": "#74ade866"
+        });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.bg, 0x101010ff);
+        assert_eq!(palette.preview_bg, 0x202020ff);
+        assert_eq!(palette.editor_gutter_bg, 0x303030ff);
+        // Blend-at-paint tokens keep their authored alpha.
+        assert_eq!(palette.active_line_bg, 0x2f343ebf);
+        assert_eq!(palette.match_highlight_bg, 0x74ade866);
+    }
+
+    #[test]
+    fn config_override_clamps_full_bleed_surfaces_opaque() {
+        // The fff `[theme]` config-override path (`apply_theme_config_colors`,
+        // run last in `sync_from_config`) also forces the full-bleed surfaces
+        // opaque after applying a translucent override, while the
+        // blend-at-paint tokens keep their alpha.
+        let config = ThemeConfig {
+            bg: Some("#10101080".to_string()),
+            preview_bg: Some("#20202040".to_string()),
+            editor_gutter_bg: Some("#30303010".to_string()),
+            active_line_bg: Some("#2f343ebf".to_string()),
+            ..ThemeConfig::default()
+        };
+        let mut theme = AppTheme::default();
+        apply_theme_config_colors(&config, &mut theme);
+        assert_eq!(theme.bg, 0x101010ff);
+        assert_eq!(theme.preview_bg, 0x202020ff);
+        assert_eq!(theme.editor_gutter_bg, 0x303030ff);
+        assert_eq!(theme.active_line_bg, 0x2f343ebf); // blend-at-paint keeps alpha
+    }
+
+    #[test]
+    fn config_overrides_land_on_matching_zed_parity_fields() {
+        // Each `[theme]` override must write its OWN resolved field — a table
+        // guard against copy-paste field mismatches in the `apply_color` wiring
+        // of `apply_theme_config_colors` (e.g. an override for `border_variant`
+        // accidentally writing `border`).
+        //
+        // Sentinels are mutually distinct so a mis-wired `apply_color` (writing
+        // the wrong field) lands the wrong value and trips an assertion. The
+        // full-bleed surfaces (`bg`, `preview_bg`, `editor_gutter_bg`) clamp
+        // opaque, so their sentinels are covered by the clamp tests above; every
+        // other `apply_color` line in `apply_theme_config_colors` is checked here.
+        let config = ThemeConfig {
+            border: Some("#010101".to_string()),
+            border_variant: Some("#111111".to_string()),
+            selected_row: Some("#020202".to_string()),
+            hover_row: Some("#030303".to_string()),
+            text_primary: Some("#040404".to_string()),
+            text_secondary: Some("#050505".to_string()),
+            text_dim: Some("#060606".to_string()),
+            text_accent: Some("#222222".to_string()),
+            match_highlight: Some("#070707".to_string()),
+            match_highlight_bg: Some("#080808".to_string()),
+            editor_gutter_bg: Some("#333333".to_string()),
+            editor_line_number: Some("#444444".to_string()),
+            editor_active_line_number: Some("#555555".to_string()),
+            input_text: Some("#090909".to_string()),
+            cursor: Some("#666666".to_string()),
+            icon_muted: Some("#0a0a0a".to_string()),
+            git_created: Some("#0b0b0b".to_string()),
+            git_modified: Some("#0c0c0c".to_string()),
+            git_deleted: Some("#0d0d0d".to_string()),
+            git_conflict: Some("#0e0e0e".to_string()),
+            git_renamed: Some("#0f0f0f".to_string()),
+            git_untracked: Some("#1a1a1a".to_string()),
+            git_ignored: Some("#1b1b1b".to_string()),
+            ..ThemeConfig::default()
+        };
+        let mut theme = AppTheme::default();
+        apply_theme_config_colors(&config, &mut theme);
+        assert_eq!(theme.border, 0x010101ff);
+        assert_eq!(theme.border_variant, 0x111111ff);
+        assert_eq!(theme.selected_row, 0x020202ff);
+        assert_eq!(theme.hover_row, 0x030303ff);
+        assert_eq!(theme.text_primary, 0x040404ff);
+        assert_eq!(theme.text_secondary, 0x050505ff);
+        assert_eq!(theme.text_dim, 0x060606ff);
+        assert_eq!(theme.text_accent, 0x222222ff);
+        assert_eq!(theme.match_highlight, 0x070707ff);
+        assert_eq!(theme.match_highlight_bg, 0x080808ff);
+        assert_eq!(theme.editor_gutter_bg, 0x333333ff);
+        assert_eq!(theme.editor_line_number, 0x444444ff);
+        assert_eq!(theme.editor_active_line_number, 0x555555ff);
+        assert_eq!(theme.input_text, 0x090909ff);
+        assert_eq!(theme.cursor, 0x666666ff);
+        assert_eq!(theme.icon_muted, 0x0a0a0aff);
+        assert_eq!(theme.git_created, 0x0b0b0bff);
+        assert_eq!(theme.git_modified, 0x0c0c0cff);
+        assert_eq!(theme.git_deleted, 0x0d0d0dff);
+        assert_eq!(theme.git_conflict, 0x0e0e0eff);
+        assert_eq!(theme.git_renamed, 0x0f0f0fff);
+        assert_eq!(theme.git_untracked, 0x1a1a1aff);
+        assert_eq!(theme.git_ignored, 0x1b1b1bff);
+    }
+
+    #[test]
+    fn missing_keys_resolve_to_per_appearance_static_defaults() {
+        // Zed semantics: a missing key resolves to the STATIC default for the
+        // theme's appearance — never to another key's resolved value.
+        let empty = serde_json::json!({});
+
+        let dark = palette_from_style(&empty, Appearance::Dark);
+        assert_eq!(dark.bg, 0x191918FF); // elevated_surface: sand dark step_2
+        assert_eq!(dark.preview_bg, 0x111110FF); // editor bg: sand dark step_1
+        assert_eq!(dark.selected_row, 0xFBFBEB23); // sand dark_alpha step_5
+        assert_eq!(dark.hover_row, 0xFEFEF31B); // sand dark_alpha step_4
+        assert_eq!(dark.border_variant, 0x31312EFF); // sand dark step_5
+
+        let light = palette_from_style(&empty, Appearance::Light);
+        assert_eq!(light.bg, 0xF9F9F8FF); // elevated_surface: sand light step_2
+        assert_eq!(light.preview_bg, 0xFDFDFCFF); // editor bg: sand light step_1
+        assert_eq!(light.selected_row, 0x1F180021); // sand light_alpha step_5
+        assert_eq!(light.hover_row, 0x20100010); // sand light_alpha step_3
+        assert_eq!(light.border_variant, 0xE2E1DEFF); // sand light step_5
+    }
+
+    #[test]
+    fn theme_without_elevated_surface_renders_two_tone_panes() {
+        // RustRover-Dark-shaped fixture: the theme (plus the user's
+        // theme_overrides) flattens `background`/`surface.background`/
+        // `editor.background` to #1e1f22 but never authors
+        // `elevated_surface.background`. Zed resolves the missing key to the
+        // static dark default and shows a two-tone picker; the old cross-key
+        // chain collapsed both panes to #1e1f22.
+        let style = serde_json::json!({
+            "background": "#1e1f22",
+            "surface.background": "#1e1f22",
+            "editor.background": "#1e1f22"
+        });
+        let palette = palette_from_style(&style, Appearance::Dark);
+        assert_eq!(palette.preview_bg, 0x1e1f22ff);
+        assert_eq!(palette.bg, ZED_DARK_DEFAULTS.elevated_surface_background);
+        assert_ne!(palette.bg, palette.preview_bg);
+    }
+
+    #[test]
+    fn default_palette_is_the_zed_dark_table() {
+        // The no-theme hardcoded palette IS Zed's dark default table: an empty
+        // style resolved dark must equal `Palette::default()` field for field.
+        assert_eq!(
+            Palette::default(),
+            palette_from_style(&serde_json::json!({}), Appearance::Dark)
+        );
+    }
+
+    #[test]
+    fn appearance_parses_leniently_with_dark_fallback() {
+        assert_eq!(appearance_from_json(Some("light")), Appearance::Light);
+        assert_eq!(appearance_from_json(Some("Light")), Appearance::Light);
+        assert_eq!(appearance_from_json(Some("dark")), Appearance::Dark);
+        // Unknown or absent values degrade to Dark instead of erroring.
+        assert_eq!(appearance_from_json(Some("solarized")), Appearance::Dark);
+        assert_eq!(appearance_from_json(None), Appearance::Dark);
+    }
+
+    #[test]
+    fn catalog_variant_appearance_selects_default_table() {
+        // The family loader threads each variant's `appearance` into palette
+        // resolution: the same missing `elevated_surface.background` resolves
+        // to the light table for a light variant and the dark table otherwise
+        // (including when `appearance` is absent).
+        let mut catalog = HashMap::new();
+        load_theme_family_contents(
+            "test family",
+            r##"{ "themes": [
+                { "name": "Test Light", "appearance": "light", "style": { "editor.background": "#ffffff" } },
+                { "name": "Test Dark", "appearance": "dark", "style": { "editor.background": "#000000" } },
+                { "name": "Test Unspecified", "style": { "editor.background": "#000000" } }
+            ] }"##,
+            &mut catalog,
+        )
+        .expect("family loads");
+
+        let light = catalog.get("test light").expect("light variant present");
+        assert_eq!(light.appearance, Appearance::Light);
+        assert_eq!(light.palette.bg, 0xF9F9F8FF); // light elevated_surface default
+        assert_eq!(
+            light.syntax_default_color,
+            ZED_LIGHT_DEFAULTS.editor_foreground
+        );
+
+        let dark = catalog.get("test dark").expect("dark variant present");
+        assert_eq!(dark.appearance, Appearance::Dark);
+        assert_eq!(dark.palette.bg, 0x191918FF); // dark elevated_surface default
+
+        let unspecified = catalog
+            .get("test unspecified")
+            .expect("unspecified variant present");
+        assert_eq!(unspecified.appearance, Appearance::Dark);
+        assert_eq!(unspecified.palette.bg, 0x191918FF);
+    }
+
+    #[test]
+    fn syntax_style_bg_parses_background_color() {
+        let style = SyntaxStyle {
+            color: Some("#112233".to_string()),
+            background_color: Some("#445566".to_string()),
+            ..SyntaxStyle::default()
+        };
+        assert_eq!(syntax_style_bg(&style), Some(0x445566ff));
+        // A missing or unparsable background color yields None.
+        assert_eq!(syntax_style_bg(&SyntaxStyle::default()), None);
+        let bad = SyntaxStyle {
+            background_color: Some("not-a-color".to_string()),
+            ..SyntaxStyle::default()
+        };
+        assert_eq!(syntax_style_bg(&bad), None);
+    }
+
+    #[test]
+    fn syntax_style_from_value_captures_background_color() {
+        let value = serde_json::json!({
+            "color": "#aabbcc",
+            "background_color": "#001122",
+            "font_style": "italic"
+        });
+        let map = value.as_object().expect("object");
+        let style = SyntaxStyle::from_value(map);
+        assert_eq!(style.background_color.as_deref(), Some("#001122"));
+        assert_eq!(syntax_style_bg(&style), Some(0x001122ff));
+    }
+
+    fn icon_fixture() -> FileIconTheme {
+        let file_stems = HashMap::from_iter([("Dockerfile".to_string(), "docker".to_string())]);
+        let file_suffixes = HashMap::from_iter([
+            ("rs".to_string(), "rust".to_string()),
+            ("tar.gz".to_string(), "archive".to_string()),
+            ("gitignore".to_string(), "git".to_string()),
+            ("d.ts".to_string(), "typescript".to_string()),
+        ]);
+        let file_icons = HashMap::from_iter(
+            ["docker", "rust", "archive", "git", "typescript", "default"]
+                .into_iter()
+                .map(|key| {
+                    (
+                        key.to_string(),
+                        FileIconDefinition {
+                            path: FileIconPath::Embedded(format!("icons/{key}.svg").into()),
+                        },
+                    )
+                }),
+        );
+        FileIconTheme {
+            file_stems,
+            file_suffixes,
+            file_icons,
+        }
+    }
+
+    fn resolved_icon(theme: &FileIconTheme, path: &str) -> Option<String> {
+        match theme.file_icon_for_path(Path::new(path))? {
+            FileIconPath::Embedded(p) | FileIconPath::External(p) => Some(p.to_string()),
+        }
+    }
+
+    #[test]
+    fn icon_keys_by_association_inverts_the_association_table() {
+        let table: &[(&str, &[&str])] =
+            &[("rust", &["rs"]), ("docker", &["Dockerfile", "dockerfile"])];
+        let map = icon_keys_by_association(table);
+        assert_eq!(map.get("rs").map(String::as_str), Some("rust"));
+        assert_eq!(map.get("Dockerfile").map(String::as_str), Some("docker"));
+        assert_eq!(map.get("dockerfile").map(String::as_str), Some("docker"));
+        assert_eq!(map.get("missing"), None);
+    }
+
+    #[test]
+    fn multiple_extensions_returns_everything_after_the_first_dot() {
+        assert_eq!(
+            multiple_extensions(Path::new("a.tar.gz")).as_deref(),
+            Some("tar.gz")
+        );
+        assert_eq!(
+            multiple_extensions(Path::new("types.d.ts")).as_deref(),
+            Some("d.ts")
+        );
+        assert_eq!(
+            multiple_extensions(Path::new("main.rs")).as_deref(),
+            Some("rs")
+        );
+        // A bare name with no dot has no suffix at all.
+        assert_eq!(multiple_extensions(Path::new("Makefile")), None);
+    }
+
+    #[test]
+    fn extension_or_hidden_file_name_prefers_hidden_name_then_extension() {
+        assert_eq!(
+            extension_or_hidden_file_name(Path::new(".gitignore")).as_deref(),
+            Some("gitignore")
+        );
+        assert_eq!(
+            extension_or_hidden_file_name(Path::new("main.rs")).as_deref(),
+            Some("rs")
+        );
+        assert_eq!(extension_or_hidden_file_name(Path::new("Makefile")), None);
+    }
+
+    #[test]
+    fn get_icon_for_type_returns_none_for_unknown_key() {
+        let theme = icon_fixture();
+        assert_eq!(theme.get_icon_for_type("nope"), None);
+        assert_eq!(
+            theme.get_icon_for_type("rust"),
+            Some(FileIconPath::Embedded("icons/rust.svg".into()))
+        );
+    }
+
+    #[test]
+    fn file_icon_for_path_walks_the_priority_chain() {
+        let theme = icon_fixture();
+        // Stem (full file name) wins over extension resolution.
+        assert_eq!(
+            resolved_icon(&theme, "app/Dockerfile").as_deref(),
+            Some("icons/docker.svg")
+        );
+        // Bare extension.
+        assert_eq!(
+            resolved_icon(&theme, "src/main.rs").as_deref(),
+            Some("icons/rust.svg")
+        );
+        // Multi-component suffixes resolve via the dotted-suffix walk.
+        assert_eq!(
+            resolved_icon(&theme, "backup.tar.gz").as_deref(),
+            Some("icons/archive.svg")
+        );
+        assert_eq!(
+            resolved_icon(&theme, "lib/types.d.ts").as_deref(),
+            Some("icons/typescript.svg")
+        );
+        // Hidden dotfile resolves by its name-without-dots.
+        assert_eq!(
+            resolved_icon(&theme, "repo/.gitignore").as_deref(),
+            Some("icons/git.svg")
+        );
+        // Unknown extension and bare extensionless names fall back to default.
+        assert_eq!(
+            resolved_icon(&theme, "notes.unknownext").as_deref(),
+            Some("icons/default.svg")
+        );
+        assert_eq!(
+            resolved_icon(&theme, "README").as_deref(),
+            Some("icons/default.svg")
+        );
+    }
+
+    #[test]
+    fn apply_icon_theme_variant_extends_maps_with_external_paths() {
+        let mut theme = FileIconTheme {
+            file_stems: HashMap::new(),
+            file_suffixes: HashMap::new(),
+            file_icons: HashMap::new(),
+        };
+        let variant = IconThemeVariant {
+            name: "Fixture".to_string(),
+            file_stems: HashMap::from_iter([("Makefile".to_string(), "make".to_string())]),
+            file_suffixes: HashMap::from_iter([("rs".to_string(), "rust".to_string())]),
+            file_icons: HashMap::from_iter([(
+                "rust".to_string(),
+                IconDefinitionContent {
+                    path: "rust.svg".into(),
+                },
+            )]),
+        };
+        apply_icon_theme_variant(&variant, Path::new("/icons"), &mut theme);
+
+        assert_eq!(
+            theme.file_stems.get("Makefile").map(String::as_str),
+            Some("make")
+        );
+        assert_eq!(
+            theme.file_suffixes.get("rs").map(String::as_str),
+            Some("rust")
+        );
+        // Icon paths are rewritten to registered external asset handles.
+        assert!(matches!(
+            theme.file_icons.get("rust").map(|def| &def.path),
+            Some(FileIconPath::External(_))
+        ));
+    }
+
+    #[test]
+    fn merge_zed_settings_fills_only_unset_fields() {
+        let mut settings = ZedSettings {
+            ui_font_family: Some("Custom UI".to_string()),
+            ui_font_size: Some(21.0),
+            theme: Some(ThemeSelection::Static("My Theme".to_string())),
+            ..ZedSettings::default()
+        };
+        merge_zed_settings(&mut settings, hardcoded_zed_settings_defaults());
+
+        // Explicitly set fields are left untouched.
+        assert_eq!(settings.ui_font_family.as_deref(), Some("Custom UI"));
+        assert_eq!(settings.ui_font_size, Some(21.0));
+        assert!(matches!(
+            settings.theme.as_ref(),
+            Some(ThemeSelection::Static(name)) if name == "My Theme"
+        ));
+        // Unset fields are filled from the defaults.
+        assert_eq!(
+            settings.buffer_font_family.as_deref(),
+            Some(DEFAULT_BUFFER_FONT_FAMILY)
+        );
+        assert_eq!(settings.buffer_font_size, Some(DEFAULT_BUFFER_FONT_SIZE));
+        assert!(settings.icon_theme.is_some());
+    }
+
+    #[test]
+    fn merge_zed_settings_populates_empty_settings_from_defaults() {
+        let mut settings = ZedSettings::default();
+        merge_zed_settings(&mut settings, hardcoded_zed_settings_defaults());
+        assert_eq!(
+            settings.ui_font_family.as_deref(),
+            Some(DEFAULT_UI_FONT_FAMILY)
+        );
+        assert_eq!(
+            settings.buffer_font_family.as_deref(),
+            Some(DEFAULT_BUFFER_FONT_FAMILY)
+        );
+        assert_eq!(settings.ui_font_size, Some(DEFAULT_UI_FONT_SIZE));
+        assert_eq!(settings.buffer_font_size, Some(DEFAULT_BUFFER_FONT_SIZE));
+        assert!(settings.theme.is_some());
+        assert!(settings.icon_theme.is_some());
     }
 }
