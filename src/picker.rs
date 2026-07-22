@@ -2319,7 +2319,9 @@ impl FffPicker {
                     .items_center()
                     .text_sm()
                     .when(show_checkbox, |d| {
-                        d.child(self.checkbox_slot(row_ix, is_checked, theme, cx))
+                        // 6px matches Zed's ListItem start_slot gap
+                        // (DynamicSpacing::Base06 at default density).
+                        d.child(self.checkbox_slot(row_ix, is_checked, theme, cx).mr(px(6.0)))
                     })
                     .child(
                         // Right-aligned line number; the 8px gap before the
