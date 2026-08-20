@@ -6,9 +6,9 @@ edition = "2024"
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
-fff-search = { version = "0.10.1", features = ["zlob"] }
-fff-query-parser = { version = "0.10.1", features = ["zlob"] }
-fff-grep = { version = "0.10.1" }
+fff-search = { version = "0.10.3", features = ["zlob"] }
+fff-query-parser = { version = "0.10.3", features = ["zlob"] }
+fff-grep = { version = "0.10.3" }
 smol = "2"
 unicode-segmentation = "1"
 anyhow = "1"
