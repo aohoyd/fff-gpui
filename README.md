@@ -156,7 +156,12 @@ fff-gpui --open <path>
 
 - `↑`/`↓` move the cursor, `enter` opens the current row, `esc` quits
 - `cmd-f` / `cmd-g` switch between file search and grep; in grep, `shift-tab` cycles the match mode (plain text → regex → fuzzy)
-- `ctrl-u` / `ctrl-d` scroll the preview, `ctrl-up` recalls the previous query
+- `ctrl-u` / `ctrl-d` scroll the preview
+- `shift-up` / `shift-down` walk the query history for the current view; stepping
+  past the newest entry restores what you were typing. `ctrl-up` is an alias for
+  `shift-up`. History is per project and per view (file search and grep keep
+  separate stacks), holds the last 128 queries, and records a query when it
+  leads to an open — not on every keystroke
 
 Grep results are grouped per match under collapsible file headers:
 

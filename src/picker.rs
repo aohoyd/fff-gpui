@@ -20,6 +20,7 @@ use gpui::*;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::editor;
+use crate::history;
 use crate::layout;
 use crate::log;
 use crate::path_shortening::PathShortenStrategy;
@@ -77,7 +78,8 @@ actions!(
         ToggleFoldAll,
         ShiftTab,
         CycleGrepMode,
-        CyclePreviousQuery,
+        HistoryPrev,
+        HistoryNext,
         PreviewScrollUp,
         PreviewScrollDown,
         SwitchFiles,
@@ -89,6 +91,21 @@ actions!(
 enum SearchView {
     Files,
     Grep,
+}
+
+// Live cursor into the query history, present only while shift-up/shift-down
+// navigation is in progress.
+#[derive(Clone, Debug)]
+struct HistoryNav {
+    // Offset handed to `query_tracker` (0 = most recent).
+    offset: usize,
+    // What the user was typing before entering history, restored by stepping
+    // past the newest entry.
+    draft: String,
+    // The last text we wrote into the field. The text-field observer compares
+    // against this to tell our own writes from real user edits — without it,
+    // every history step would look like typing and drop the cursor.
+    injected: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -194,6 +211,9 @@ pub struct FffPicker {
     print_stdout: bool,
     grep_mode: GrepMode,
     query: String,
+    // Set while walking the query history; cleared by any user edit and by a
+    // view switch (Files and Grep keep separate history stacks).
+    history_nav: Option<HistoryNav>,
     results: Arc<Vec<FileItemSnapshot>>,
     total_files: usize,
     total_matched: usize,
@@ -970,6 +990,16 @@ impl FffPicker {
         cx.observe(&text_field, |this, _entity, cx| {
             let new_query = this.text_field.read(cx).text();
             if new_query != this.query {
+                // Anything we did not inject ourselves is a real edit, which
+                // drops the cursor so the next shift-up starts from the newest
+                // entry again.
+                let injected_by_history = this
+                    .history_nav
+                    .as_ref()
+                    .is_some_and(|nav| nav.injected == new_query);
+                if !injected_by_history {
+                    this.history_nav = None;
+                }
                 this.query = new_query;
                 this.status_message = None;
                 Arc::make_mut(&mut this.selection).clear();
@@ -992,6 +1022,7 @@ impl FffPicker {
             print_stdout,
             grep_mode: GrepMode::PlainText,
             query: String::new(),
+            history_nav: None,
             results: Arc::new(Vec::new()),
             total_files: 0,
             total_matched: 0,
@@ -1480,6 +1511,9 @@ impl FffPicker {
         Arc::make_mut(&mut self.results).clear();
         self.total_files = 0;
         self.total_matched = 0;
+        // Files and Grep read separate history stacks, so an offset carried
+        // across the switch would point into the wrong one.
+        self.history_nav = None;
         self.collapsed.clear();
         self.rebuild_rows();
         self.selected = 0;
@@ -2010,34 +2044,87 @@ impl FffPicker {
         self.switch_mode(window, cx);
     }
 
-    // Restore the previous query from the local search history.
-    fn on_cycle_previous_query(
-        &mut self,
-        _: &CyclePreviousQuery,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(query) = (|| {
+    // Shift-up: step to an older query in the local search history.
+    fn on_history_prev(&mut self, _: &HistoryPrev, _window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_history(history::Direction::Older, cx);
+    }
+
+    // Shift-down: step back toward the newest query, then to the draft.
+    fn on_history_next(&mut self, _: &HistoryNext, _window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_history(history::Direction::Newer, cx);
+    }
+
+    // Walk the query history one entry and put the result in the field.
+    // Files and Grep read separate stacks, so the view decides which one.
+    fn navigate_history(&mut self, direction: history::Direction, cx: &mut Context<Self>) {
+        let current = self.history_nav.as_ref().map(|nav| nav.offset);
+        // Copied out so the fetch closure below doesn't borrow `self` while
+        // `navigate_history` holds it mutably.
+        let view = self.view;
+        let shown = self.query.clone();
+
+        let outcome = (|| {
             let guard = self.shared_query_tracker.read().ok()?;
             let tracker = guard.as_ref()?;
             let picker_guard = self.shared_picker.read().ok()?;
             let picker = picker_guard.as_ref()?;
             let project_path = picker.base_path();
-            match self.view {
-                SearchView::Files => tracker.get_historical_query(project_path, 0).ok().flatten(),
-                SearchView::Grep => tracker
-                    .get_historical_grep_query(project_path, 0)
-                    .ok()
-                    .flatten(),
-            }
-        })() else {
-            self.status_message = Some("No query history".to_string());
-            cx.notify();
-            return;
-        };
+            Some(history::step(
+                |offset| match view {
+                    SearchView::Files => tracker
+                        .get_historical_query(project_path, offset)
+                        .ok()
+                        .flatten(),
+                    SearchView::Grep => tracker
+                        .get_historical_grep_query(project_path, offset)
+                        .ok()
+                        .flatten(),
+                },
+                current,
+                direction,
+                &shown,
+            ))
+        })();
 
-        self.text_field
-            .update(cx, |field, cx| field.set_text(query, cx));
+        // A poisoned lock or an unopened tracker reads as an empty history.
+        let outcome = outcome.unwrap_or(history::Step::Edge);
+
+        match outcome {
+            history::Step::Move { offset, query } => {
+                // Entering history for the first time banks the draft so
+                // shift-down can hand it back; later steps carry it along.
+                let draft = match self.history_nav.take() {
+                    Some(nav) => nav.draft,
+                    None => shown,
+                };
+                // Set before `set_text` so the observer sees the cursor it
+                // needs to recognize this write as ours.
+                self.history_nav = Some(HistoryNav {
+                    offset,
+                    draft,
+                    injected: query.clone(),
+                });
+                self.status_message = None;
+                self.text_field
+                    .update(cx, |field, cx| field.set_text(query, cx));
+            }
+            history::Step::Draft => {
+                let Some(nav) = self.history_nav.take() else {
+                    return;
+                };
+                self.text_field
+                    .update(cx, |field, cx| field.set_text(nav.draft, cx));
+            }
+            // shift-down outside history is a no-op — the draft is already up.
+            history::Step::Edge if direction == history::Direction::Newer => {}
+            history::Step::Edge => {
+                self.status_message = Some(match current {
+                    Some(_) => "Oldest query".to_string(),
+                    None => "No query history".to_string(),
+                });
+                cx.notify();
+            }
+        }
     }
 
     // Scroll the preview pane toward the top.
@@ -2321,7 +2408,10 @@ impl FffPicker {
                     .when(show_checkbox, |d| {
                         // 6px matches Zed's ListItem start_slot gap
                         // (DynamicSpacing::Base06 at default density).
-                        d.child(self.checkbox_slot(row_ix, is_checked, theme, cx).mr(px(6.0)))
+                        d.child(
+                            self.checkbox_slot(row_ix, is_checked, theme, cx)
+                                .mr(px(6.0)),
+                        )
                     })
                     .child(
                         // Right-aligned line number; the 8px gap before the
@@ -2615,7 +2705,8 @@ impl Render for FffPicker {
             .on_action(cx.listener(Self::on_toggle_fold_all))
             .on_action(cx.listener(Self::on_shift_tab))
             .on_action(cx.listener(Self::on_cycle_grep_mode))
-            .on_action(cx.listener(Self::on_cycle_previous_query))
+            .on_action(cx.listener(Self::on_history_prev))
+            .on_action(cx.listener(Self::on_history_next))
             .on_action(cx.listener(Self::on_preview_scroll_up))
             .on_action(cx.listener(Self::on_preview_scroll_down))
             .on_action(cx.listener(Self::on_switch_files))

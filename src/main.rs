@@ -3,6 +3,7 @@
 mod assets;
 mod config;
 mod editor;
+mod history;
 mod hotkey;
 mod layout;
 mod log;
@@ -30,7 +31,7 @@ use tracing::{debug, info};
 
 use config::{AppConfig, home_dir};
 use picker::{
-    CyclePreviousQuery, FffPicker, OpenSelected, PickerSharedState, PreviewScrollDown,
+    FffPicker, HistoryNext, HistoryPrev, OpenSelected, PickerSharedState, PreviewScrollDown,
     PreviewScrollUp, Quit, SelectNext, SelectPrev, ShiftTab, SwitchFiles, SwitchGrep, ToggleFold,
     ToggleFoldAll, ToggleMultiSelectMode, ToggleSelectAll, ToggleSelected,
 };
@@ -276,7 +277,11 @@ fn bind_base_keys(cx: &mut App) {
         KeyBinding::new("alt-z", ToggleFold, None),
         KeyBinding::new("alt-shift-z", ToggleFoldAll, None),
         KeyBinding::new("shift-tab", ShiftTab, None),
-        KeyBinding::new("ctrl-up", CyclePreviousQuery, None),
+        KeyBinding::new("shift-up", HistoryPrev, None),
+        KeyBinding::new("shift-down", HistoryNext, None),
+        // Kept for muscle memory: the old one-shot "recall last query" is the
+        // first press of HistoryPrev.
+        KeyBinding::new("ctrl-up", HistoryPrev, None),
         KeyBinding::new("ctrl-u", PreviewScrollUp, None),
         KeyBinding::new("ctrl-d", PreviewScrollDown, None),
         KeyBinding::new("cmd-f", SwitchFiles, None),

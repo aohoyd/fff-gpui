@@ -26,6 +26,7 @@ gpui-free modules and unit-test that instead of the render code:
 - `src/rows.rs` — result-row model (headers, matches, separators, selection).
 - `src/path_shortening.rs` — directory truncation helpers (unit-tested; extend
   the `#[cfg(test)]` coverage alongside any behavior change).
+- `src/history.rs` — query-history cursor stepping for shift-up/shift-down.
 
 Pattern: a `render_*` method computes nothing non-trivial inline — it calls a
 pure helper that has its own `#[cfg(test)]` tests.
@@ -35,7 +36,8 @@ pure helper that has its own `#[cfg(test)]` tests.
 - `picker.rs` — orchestration + all GPUI render/event wiring (the big module).
 - `ui.rs` — Zed-style component builders (disclosure, checkbox, icon_button);
   render-only, no unit tests per the GPUI policy above.
-- `layout.rs`, `rows.rs`, `path_shortening.rs` — pure, unit-tested helpers.
+- `layout.rs`, `rows.rs`, `path_shortening.rs`, `history.rs` — pure,
+  unit-tested helpers.
 - `preview.rs` — tree-sitter syntax highlighting; compiled
   `HighlightConfiguration`s are cached per language (compiling one is ~10ms).
 - `theme.rs` — syncs Zed theme (colors, syntax tokens, `theme_overrides`).
